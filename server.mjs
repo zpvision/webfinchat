@@ -233,6 +233,16 @@ function normalizeFileRef(ref) {
   return ref;
 }
 
+function createContentDispositionFilename(name) {
+  const fallback = String(name || 'document.pdf')
+    .replace(/[^\x20-\x7e]/g, '_')
+    .replace(/["\\]/g, '_')
+    .slice(0, 120) || 'document.pdf';
+  const encoded = encodeURIComponent(String(name || 'document.pdf')).replace(/['()]/g, escape);
+
+  return `inline; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
 function cleanupPdfViewTokens() {
   const now = Date.now();
 
@@ -362,7 +372,7 @@ async function handlePdfView(request, response) {
   response.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'self'");
   response.setHeader('Cache-Control', 'no-store');
   response.setHeader('Content-Type', 'application/pdf');
-  response.setHeader('Content-Disposition', `inline; filename="${item.name}"`);
+  response.setHeader('Content-Disposition', createContentDispositionFilename(item.name));
   response.setHeader('Content-Length', String(fileBody.length));
   response.end(fileBody);
 }
