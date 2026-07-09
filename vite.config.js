@@ -1,9 +1,11 @@
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
+import { randomUUID } from 'node:crypto';
 import tls from 'node:tls';
 
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_DOWNLOAD_BYTES = MAX_FILE_BYTES;
+const PDF_VIEW_TTL_MS = 5 * 60 * 1000;
 
 function readBody(request, maxBytes = MAX_FILE_BYTES) {
   return new Promise((resolve, reject) => {
@@ -140,10 +142,40 @@ function normalizeFileRef(ref, finchatHost) {
 function fileProxyPlugin(env) {
   const finchatHost = env.FINCHAT_HOST || 'api.dev.finchat.club';
   const apiKey = env.FINCHAT_API_KEY || '';
+  const pdfViewTokens = new Map();
   const allowedOrigins = (env.ALLOWED_ORIGINS || '')
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
+
+  const cleanupPdfViewTokens = () => {
+    const now = Date.now();
+
+    for (const [id, item] of pdfViewTokens.entries()) {
+      if (item.expiresAt <= now) {
+        pdfViewTokens.delete(id);
+      }
+    }
+  };
+
+  const fetchFinchatFile = (normalizedRef, token) => {
+    const fileUrl = new URL(normalizedRef, `https://${finchatHost}`);
+
+    if (apiKey) {
+      fileUrl.searchParams.set('apikey', apiKey);
+    }
+
+    fileUrl.searchParams.set('auth', 'token');
+    fileUrl.searchParams.set('secret', token);
+
+    return fetch(fileUrl, {
+      headers: {
+        ...(apiKey ? { 'X-Finchat-APIKey': apiKey } : {}),
+        'X-Finchat-Auth': `Token ${token}`,
+      },
+      redirect: 'follow',
+    });
+  };
 
   return {
     name: 'file-proxy',
@@ -251,6 +283,99 @@ function fileProxyPlugin(env) {
         } catch (error) {
           response.statusCode = 502;
           response.end(error.message || 'File upload failed');
+        }
+      });
+
+      server.middlewares.use('/pdf-view-proxy', async (request, response) => {
+        cleanupPdfViewTokens();
+
+        if (request.method === 'POST') {
+          try {
+            const token = singleHeader(request.headers['x-finchat-token']);
+
+            if (!token) {
+              response.statusCode = 401;
+              response.end('Missing FinChat token');
+              return;
+            }
+
+            const payload = JSON.parse((await readBody(request, 8 * 1024)).toString('utf8'));
+            const normalizedRef = normalizeFileRef(payload?.ref || '', finchatHost);
+
+            if (!normalizedRef) {
+              response.statusCode = 400;
+              response.end('Missing or invalid file ref');
+              return;
+            }
+
+            const id = randomUUID();
+
+            pdfViewTokens.set(id, {
+              token,
+              ref: normalizedRef,
+              name: String(payload?.name || 'document.pdf').replace(/[\r\n"]/g, ''),
+              expiresAt: Date.now() + PDF_VIEW_TTL_MS,
+            });
+
+            response.setHeader('Content-Type', 'application/json');
+            response.end(JSON.stringify({ url: `/pdf-view-proxy?id=${encodeURIComponent(id)}` }));
+          } catch (error) {
+            response.statusCode = 400;
+            response.end(error.message || 'Invalid request body');
+          }
+
+          return;
+        }
+
+        if (request.method !== 'GET') {
+          response.statusCode = 405;
+          response.end('Method not allowed');
+          return;
+        }
+
+        try {
+          const requestUrl = new URL(request.url || '', 'http://localhost');
+          const id = requestUrl.searchParams.get('id') || '';
+          const item = pdfViewTokens.get(id);
+
+          if (!item || item.expiresAt <= Date.now()) {
+            pdfViewTokens.delete(id);
+            response.statusCode = 404;
+            response.end('PDF link expired');
+            return;
+          }
+
+          const fileResponse = await fetchFinchatFile(item.ref, item.token);
+          let fileBody;
+
+          try {
+            fileBody = await readResponseBody(fileResponse);
+          } catch (error) {
+            response.statusCode = 413;
+            response.end(error.message || 'File is too large');
+            return;
+          }
+
+          if (!fileResponse.ok) {
+            response.statusCode = fileResponse.status;
+            response.setHeader('Content-Type', fileResponse.headers.get('content-type') || 'text/plain');
+            response.end(fileBody);
+            return;
+          }
+
+          response.statusCode = 200;
+          response.setHeader('X-Content-Type-Options', 'nosniff');
+          response.setHeader('Referrer-Policy', 'no-referrer');
+          response.setHeader('X-Frame-Options', 'SAMEORIGIN');
+          response.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'self'");
+          response.setHeader('Cache-Control', 'no-store');
+          response.setHeader('Content-Type', 'application/pdf');
+          response.setHeader('Content-Disposition', `inline; filename="${item.name}"`);
+          response.setHeader('Content-Length', String(fileBody.length));
+          response.end(fileBody);
+        } catch (error) {
+          response.statusCode = 502;
+          response.end(error.message || 'PDF view failed');
         }
       });
 

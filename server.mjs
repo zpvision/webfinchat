@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import tls from 'node:tls';
 
 function loadDotEnv() {
@@ -40,6 +41,8 @@ const FINCHAT_API_KEY = process.env.FINCHAT_API_KEY || '';
 const MAX_FILE_BYTES = Number(process.env.MAX_FILE_BYTES || 50 * 1024 * 1024);
 const MAX_DOWNLOAD_BYTES = Number(process.env.MAX_DOWNLOAD_BYTES || MAX_FILE_BYTES);
 const DIST_DIR = resolve('dist');
+const PDF_VIEW_TTL_MS = 5 * 60 * 1000;
+const pdfViewTokens = new Map();
 
 const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
@@ -228,6 +231,123 @@ function normalizeFileRef(ref) {
   }
 
   return ref;
+}
+
+function cleanupPdfViewTokens() {
+  const now = Date.now();
+
+  for (const [id, item] of pdfViewTokens.entries()) {
+    if (item.expiresAt <= now) {
+      pdfViewTokens.delete(id);
+    }
+  }
+}
+
+async function fetchFinchatFile(normalizedRef, token) {
+  const fileUrl = new URL(normalizedRef, `https://${FINCHAT_HOST}`);
+
+  if (FINCHAT_API_KEY) {
+    fileUrl.searchParams.set('apikey', FINCHAT_API_KEY);
+  }
+
+  fileUrl.searchParams.set('auth', 'token');
+  fileUrl.searchParams.set('secret', token);
+
+  return fetch(fileUrl, {
+    headers: {
+      ...(FINCHAT_API_KEY ? { 'X-Finchat-APIKey': FINCHAT_API_KEY } : {}),
+      'X-Finchat-Auth': `Token ${token}`,
+    },
+    redirect: 'follow',
+  });
+}
+
+async function handlePdfView(request, response) {
+  const requestUrl = new URL(request.url || '', 'http://localhost');
+
+  cleanupPdfViewTokens();
+
+  if (request.method === 'POST') {
+    const token = singleHeader(request.headers['x-finchat-token']);
+
+    if (!token) {
+      send(response, 401, 'Missing FinChat token');
+      return;
+    }
+
+    let payload;
+
+    try {
+      payload = JSON.parse((await readBody(request, 8 * 1024)).toString('utf8'));
+    } catch {
+      send(response, 400, 'Invalid request body');
+      return;
+    }
+
+    const normalizedRef = normalizeFileRef(payload?.ref || '');
+
+    if (!normalizedRef) {
+      send(response, 400, 'Missing or invalid file ref');
+      return;
+    }
+
+    const id = randomUUID();
+
+    pdfViewTokens.set(id, {
+      token,
+      ref: normalizedRef,
+      name: String(payload?.name || 'document.pdf').replace(/[\r\n"]/g, ''),
+      expiresAt: Date.now() + PDF_VIEW_TTL_MS,
+    });
+
+    send(
+      response,
+      200,
+      JSON.stringify({ url: `/pdf-view-proxy?id=${encodeURIComponent(id)}` }),
+      'application/json; charset=utf-8',
+    );
+    return;
+  }
+
+  if (request.method !== 'GET') {
+    send(response, 405, 'Method not allowed');
+    return;
+  }
+
+  const id = requestUrl.searchParams.get('id') || '';
+  const item = pdfViewTokens.get(id);
+
+  if (!item || item.expiresAt <= Date.now()) {
+    pdfViewTokens.delete(id);
+    send(response, 404, 'PDF link expired');
+    return;
+  }
+
+  const fileResponse = await fetchFinchatFile(item.ref, item.token);
+  let fileBody;
+
+  try {
+    fileBody = await readResponseBody(fileResponse);
+  } catch (error) {
+    send(response, 413, error.message || 'File is too large');
+    return;
+  }
+
+  if (!fileResponse.ok) {
+    send(response, fileResponse.status, fileBody, fileResponse.headers.get('content-type') || 'text/plain');
+    return;
+  }
+
+  response.statusCode = 200;
+  response.setHeader('X-Content-Type-Options', 'nosniff');
+  response.setHeader('Referrer-Policy', 'no-referrer');
+  response.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  response.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'self'");
+  response.setHeader('Cache-Control', 'no-store');
+  response.setHeader('Content-Type', 'application/pdf');
+  response.setHeader('Content-Disposition', `inline; filename="${item.name}"`);
+  response.setHeader('Content-Length', String(fileBody.length));
+  response.end(fileBody);
 }
 
 async function handleUpload(request, response) {
@@ -486,6 +606,11 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/file-download-proxy') {
       await handleDownload(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === '/pdf-view-proxy') {
+      await handlePdfView(request, response);
       return;
     }
 

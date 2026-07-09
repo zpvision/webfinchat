@@ -2,6 +2,7 @@
 import { createPortal } from 'react-dom';
 import {
   FinchatRealtimeClient,
+  createPdfViewUrl,
   downloadAttachmentFile,
   fetchAttachmentBlob,
   getDeletedRanges,
@@ -500,7 +501,7 @@ function isPdfAttachment(attachment) {
 }
 
 function PdfViewer({ file, token, onClose }) {
-  const [objectUrl, setObjectUrl] = useState('');
+  const [viewUrl, setViewUrl] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -531,18 +532,16 @@ function PdfViewer({ file, token, onClose }) {
 
   useEffect(() => {
     let active = true;
-    let nextObjectUrl = '';
 
     async function loadPdf() {
       setError('');
-      setObjectUrl('');
+      setViewUrl('');
 
       try {
-        const blob = await fetchAttachmentBlob({ token, ref: file.ref });
-        nextObjectUrl = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
+        const nextViewUrl = await createPdfViewUrl({ token, ref: file.ref, name: file.name });
 
         if (active) {
-          setObjectUrl(nextObjectUrl);
+          setViewUrl(nextViewUrl);
         }
       } catch (requestError) {
         if (active) {
@@ -557,10 +556,6 @@ function PdfViewer({ file, token, onClose }) {
 
     return () => {
       active = false;
-
-      if (nextObjectUrl) {
-        URL.revokeObjectURL(nextObjectUrl);
-      }
     };
   }, [file, token]);
 
@@ -589,8 +584,8 @@ function PdfViewer({ file, token, onClose }) {
         </div>
         <div className="pdf-modal-stage">
           {error && <span className="attachment-error">{error}</span>}
-          {!error && !objectUrl && <span className="attachment-loading">Загружаем PDF...</span>}
-          {objectUrl && <iframe title={file.name} src={objectUrl} />}
+          {!error && !viewUrl && <span className="attachment-loading">Загружаем PDF...</span>}
+          {viewUrl && <iframe title={file.name} src={viewUrl} />}
         </div>
       </div>
     </div>,

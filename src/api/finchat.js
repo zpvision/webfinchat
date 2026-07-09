@@ -110,6 +110,38 @@ export async function downloadAttachmentFile({ token, ref, name }) {
   window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
+export async function createPdfViewUrl({ token, ref, name }) {
+  if (!token) {
+    throw new Error('Нет токена авторизации для просмотра PDF.');
+  }
+
+  if (!ref) {
+    throw new Error('У PDF нет ссылки для просмотра.');
+  }
+
+  const response = await fetch('/pdf-view-proxy', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Finchat-Token': token,
+    },
+    body: JSON.stringify({ ref, name }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(errorText || `Не удалось открыть PDF: ${response.status}.`);
+  }
+
+  const payload = await response.json();
+
+  if (!payload.url) {
+    throw new Error('Сервер не вернул ссылку для просмотра PDF.');
+  }
+
+  return payload.url;
+}
+
 function getFileExtension(name) {
   const extension = name?.split('.').pop();
 
