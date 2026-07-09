@@ -590,9 +590,11 @@ function parseReply(head) {
     return head.reply;
   }
 
-  if (typeof head.reply === 'number' || /^\d+$/.test(String(head.reply))) {
+  const replyValue = String(head.reply).replace(/^:/, '');
+
+  if (typeof head.reply === 'number' || /^\d+$/.test(replyValue)) {
     return {
-      seq: Number(head.reply),
+      seq: Number(replyValue),
       text: '',
     };
   }

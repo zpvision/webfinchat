@@ -113,6 +113,40 @@ function formatMessageTime(value) {
   }).format(new Date(value));
 }
 
+function formatMessageDate(value) {
+  if (!value) {
+    return '';
+  }
+
+  const date = new Date(value);
+  const today = new Date();
+  const yesterday = new Date();
+
+  yesterday.setDate(today.getDate() - 1);
+
+  if (date.toDateString() === today.toDateString()) {
+    return 'Сегодня';
+  }
+
+  if (date.toDateString() === yesterday.toDateString()) {
+    return 'Вчера';
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: 'long',
+    year: date.getFullYear() === today.getFullYear() ? undefined : 'numeric',
+  }).format(date);
+}
+
+function getMessageDateKey(value) {
+  if (!value) {
+    return '';
+  }
+
+  return new Date(value).toISOString().slice(0, 10);
+}
+
 function getInitials(title) {
   return title
     .split(/\s+/)
@@ -121,6 +155,17 @@ function getInitials(title) {
     .map((part) => part[0])
     .join('')
     .toUpperCase();
+}
+
+function getAvatarTone(value) {
+  const source = value || '';
+  let hash = 0;
+
+  for (let index = 0; index < source.length; index += 1) {
+    hash = (hash + source.charCodeAt(index) * (index + 1)) % 6;
+  }
+
+  return `avatar-tone-${hash + 1}`;
 }
 
 function formatFileSize(value) {
@@ -210,6 +255,38 @@ function getMessageCopyText(message) {
     .join('\n');
 }
 
+function getMessageAttachmentKey(message) {
+  return (message.attachments || [])
+    .map((attachment) => attachment.ref || attachment.url || attachment.name)
+    .filter(Boolean)
+    .join('|');
+}
+
+function isSameMessage(left, right) {
+  if (!left || !right) {
+    return false;
+  }
+
+  if (left.id && right.id && left.id === right.id) {
+    return true;
+  }
+
+  if (left.seq != null && right.seq != null && Number(left.seq) === Number(right.seq)) {
+    return true;
+  }
+
+  const leftAttachmentKey = getMessageAttachmentKey(left);
+  const rightAttachmentKey = getMessageAttachmentKey(right);
+
+  return Boolean(
+    leftAttachmentKey &&
+      rightAttachmentKey &&
+      leftAttachmentKey === rightAttachmentKey &&
+      (left.text || '') === (right.text || '') &&
+      left.topic === right.topic,
+  );
+}
+
 async function loadMessagesWithRetry({ token, topic, beforeSeq, limit = MESSAGE_PAGE_SIZE }) {
   let lastError = null;
 
@@ -278,7 +355,7 @@ function ImageViewer({ image, onClose }) {
   );
 }
 
-function AttachmentImage({ attachment, token, onOpen }) {
+function AttachmentImage({ attachment, token, onOpen, onLoad }) {
   const [objectUrl, setObjectUrl] = useState('');
   const [error, setError] = useState('');
 
@@ -331,6 +408,7 @@ function AttachmentImage({ attachment, token, onOpen }) {
         alt={attachment.name}
         height={attachment.height || undefined}
         loading="lazy"
+        onLoad={onLoad}
         src={objectUrl}
         width={attachment.width || undefined}
       />
@@ -338,7 +416,7 @@ function AttachmentImage({ attachment, token, onOpen }) {
   );
 }
 
-function MessageAttachments({ attachments, token }) {
+function MessageAttachments({ attachments, token, onMediaLoad }) {
   const [downloadingId, setDownloadingId] = useState('');
   const [downloadError, setDownloadError] = useState('');
   const [viewerImage, setViewerImage] = useState(null);
@@ -368,7 +446,13 @@ function MessageAttachments({ attachments, token }) {
     <div className="message-attachments">
       {attachments.map((attachment) =>
         attachment.type === 'image' ? (
-          <AttachmentImage attachment={attachment} key={attachment.id} token={token} onOpen={setViewerImage} />
+          <AttachmentImage
+            attachment={attachment}
+            key={attachment.id}
+            token={token}
+            onOpen={setViewerImage}
+            onLoad={onMediaLoad}
+          />
         ) : (
           <button
             className="file-attachment"
@@ -566,6 +650,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
   const messageEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const preserveScrollRef = useRef(false);
+  const stickToBottomRef = useRef(true);
 
   useEffect(() => {
     let active = true;
@@ -662,13 +747,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
           );
         }
 
-        if (
-          current.some(
-            (message) =>
-              message.id === incomingMessage.id ||
-              (incomingMessage.seq != null && message.seq === incomingMessage.seq),
-          )
-        ) {
+        if (current.some((message) => isSameMessage(message, incomingMessage))) {
           return current;
         }
 
@@ -685,8 +764,19 @@ function Conversation({ chat, client, session, onChatActivity }) {
       return;
     }
 
+    stickToBottomRef.current = true;
     messageEndRef.current?.scrollIntoView({ block: 'end' });
   }, [messages.length, status]);
+
+  const scrollToBottomIfNeeded = () => {
+    if (!stickToBottomRef.current || preserveScrollRef.current) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      messageEndRef.current?.scrollIntoView({ block: 'end' });
+    });
+  };
 
   const loadOlderMessages = async () => {
     if (olderStatus === 'loading' || !hasOlderMessages || messages.length === 0 || !chat?.topic) {
@@ -740,7 +830,12 @@ function Conversation({ chat, client, session, onChatActivity }) {
   };
 
   const handleMessageScroll = (event) => {
-    if (event.currentTarget.scrollTop <= 80) {
+    const target = event.currentTarget;
+    const distanceToBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
+
+    stickToBottomRef.current = distanceToBottom < 120;
+
+    if (target.scrollTop <= 80) {
       loadOlderMessages();
     }
   };
@@ -818,17 +913,19 @@ function Conversation({ chat, client, session, onChatActivity }) {
               replyTo,
             });
 
-      setMessages((current) => [
-        ...current,
-        {
-          ...sentMessage,
-          from: session.user || sentMessage.from,
-        },
-      ]);
-      onChatActivity?.({
+      const localSentMessage = {
         ...sentMessage,
         from: session.user || sentMessage.from,
+      };
+
+      setMessages((current) => {
+        if (current.some((message) => isSameMessage(message, localSentMessage))) {
+          return current;
+        }
+
+        return [...current, localSentMessage];
       });
+      onChatActivity?.(localSentMessage);
       setDraft('');
       setReplyTo(null);
       setSelectedFiles([]);
@@ -964,34 +1061,43 @@ function Conversation({ chat, client, session, onChatActivity }) {
         {status === 'ready' && messages.length > 0 && (
           <div className="message-list">
             {olderStatus === 'loading' && <div className="history-loader">Загружаем предыдущие сообщения...</div>}
-            {messages.map((message) => {
+            {messages.map((message, index) => {
               const mine = message.from === session.user;
+              const dateKey = getMessageDateKey(message.createdAt);
+              const previousDateKey = getMessageDateKey(messages[index - 1]?.createdAt);
+              const showDate = dateKey && dateKey !== previousDateKey;
 
               return (
-                <article
-                  className={`message-bubble ${mine ? 'mine' : ''} ${messageMenu?.message?.id === message.id ? 'menu-open' : ''}`}
-                  key={message.id}
-                  onContextMenu={(event) => openMessageMenu(event, message)}
-                >
-                  {message.reply && (
-                    <div className="reply-preview">
-                      <strong>Ответ на сообщение</strong>
-                      <span>{getReplyPreview(message.reply, messages)}</span>
-                    </div>
-                  )}
-                  {message.text && <p>{message.text}</p>}
-                  <MessageAttachments attachments={message.attachments} token={session.token} />
-                  {!message.text && !message.attachments?.length && <p>Сообщение без текста</p>}
-                  <footer>
-                    <time>
-                      {formatMessageTime(message.createdAt)}
-                      {message.editedAt && ' · изменено'}
-                    </time>
-                    <button type="button" onClick={() => setReplyTo(message)}>
-                      Ответить
-                    </button>
-                  </footer>
-                </article>
+                <div className="message-item-group" key={message.id}>
+                  {showDate && <div className="message-date-label">{formatMessageDate(message.createdAt)}</div>}
+                  <article
+                    className={`message-bubble ${mine ? 'mine' : ''} ${messageMenu?.message?.id === message.id ? 'menu-open' : ''}`}
+                    onContextMenu={(event) => openMessageMenu(event, message)}
+                  >
+                    {message.reply && (
+                      <div className="reply-preview">
+                        <strong>Ответ на сообщение</strong>
+                        <span>{getReplyPreview(message.reply, messages)}</span>
+                      </div>
+                    )}
+                    {message.text && <p>{message.text}</p>}
+                    <MessageAttachments
+                      attachments={message.attachments}
+                      token={session.token}
+                      onMediaLoad={scrollToBottomIfNeeded}
+                    />
+                    {!message.text && !message.attachments?.length && <p>Сообщение без текста</p>}
+                    <footer>
+                      <time>
+                        {formatMessageTime(message.createdAt)}
+                        {message.editedAt && ' · изменено'}
+                      </time>
+                      <button type="button" onClick={() => setReplyTo(message)}>
+                        Ответить
+                      </button>
+                    </footer>
+                  </article>
+                </div>
               );
             })}
             <div ref={messageEndRef} />
@@ -1316,12 +1422,15 @@ function MessengerScreen({ session, onLogout, theme, onToggleTheme }) {
               type="button"
               onClick={() => setSelectedId(chat.id)}
             >
-              <span className="avatar" aria-hidden="true">
+              <span className={`avatar ${getAvatarTone(chat.topic || chat.title)}`} aria-hidden="true">
                 {getInitials(chat.title)}
               </span>
               <span className="chat-main">
                 <span className="chat-topline">
-                  <strong>{chat.title}</strong>
+                  <strong>
+                    {chat.title}
+                    {chat.isGroup && <span className="group-chat-icon" aria-label="Группа" title="Группа" />}
+                  </strong>
                   <time>{formatChatDate(chat.updatedAt)}</time>
                 </span>
                 <span className="chat-subline">

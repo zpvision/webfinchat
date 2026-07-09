@@ -341,7 +341,7 @@ html[data-theme="dark"] .composer-row {
   width: 100vw;
   height: 100vh;
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: 336px minmax(0, 1fr);
   overflow: hidden;
   background: linear-gradient(135deg, var(--fc-frame) 0%, var(--fc-frame-2) 100%);
 }
@@ -522,6 +522,30 @@ html[data-theme="dark"] .composer-row {
   font-weight: 500;
 }
 
+.avatar-tone-1 {
+  background: linear-gradient(135deg, #c77ed9, #a05bc9);
+}
+
+.avatar-tone-2 {
+  background: linear-gradient(135deg, #6b86e8, #5a6fd6);
+}
+
+.avatar-tone-3 {
+  background: linear-gradient(135deg, #5dbe96, #45a37d);
+}
+
+.avatar-tone-4 {
+  background: linear-gradient(135deg, #f0a45f, #d8884c);
+}
+
+.avatar-tone-5 {
+  background: linear-gradient(135deg, #ff7cb8, #d85b9d);
+}
+
+.avatar-tone-6 {
+  background: linear-gradient(135deg, #6bc7d9, #469bb5);
+}
+
 .avatar.large {
   width: 40px;
   height: 40px;
@@ -551,9 +575,43 @@ html[data-theme="dark"] .composer-row {
 }
 
 .chat-topline strong {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--fc-text);
   font-size: 13px;
   font-weight: 500;
+}
+
+.chat-topline strong .group-chat-icon {
+  position: relative;
+  width: 16px;
+  height: 14px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: rgba(107, 93, 211, 0.12);
+}
+
+.group-chat-icon::before,
+.group-chat-icon::after {
+  position: absolute;
+  top: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--fc-primary);
+  content: "";
+}
+
+.group-chat-icon::before {
+  left: 3px;
+  box-shadow: 0 5px 0 1px rgba(107, 93, 211, 0.25);
+}
+
+.group-chat-icon::after {
+  right: 3px;
+  box-shadow: 0 5px 0 1px rgba(107, 93, 211, 0.18);
 }
 
 .chat-topline time,
@@ -660,6 +718,26 @@ html[data-theme="dark"] .composer-row {
 }
 
 html[data-theme="dark"] .history-loader {
+  color: #8b85a8;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.message-item-group {
+  display: contents;
+}
+
+.message-date-label {
+  align-self: center;
+  border-radius: 999px;
+  margin: 6px 0;
+  padding: 5px 10px;
+  color: var(--fc-muted);
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+html[data-theme="dark"] .message-date-label {
   color: #8b85a8;
   background: rgba(255, 255, 255, 0.06);
 }
@@ -1444,6 +1522,66 @@ html[data-theme="dark"] .image-modal-panel {
 
 .error-line {
   color: var(--fc-danger);
+}
+
+/* Slightly larger production typography. */
+.notice,
+.result {
+  font-size: 16px;
+}
+
+.field span:first-child,
+.history-loader,
+.message-date-label,
+.attachment-error,
+.attachment-loading,
+.composer-reply strong,
+.composer-reply span,
+.composer-edit strong,
+.composer-edit span:not(.action-icon),
+.composer-file-meta span {
+  font-size: 14px;
+}
+
+.official-link,
+.search-box input,
+.message-context-menu button,
+.file-details strong,
+.composer-file-meta strong,
+.state-line {
+  font-size: 16px;
+}
+
+.field input,
+.conversation-header h2,
+.conversation-empty p,
+.message-bubble,
+.composer textarea {
+  font-size: 17px;
+}
+
+.chat-topline strong {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.chat-topline time,
+.chat-subline {
+  font-size: 14px;
+}
+
+.submit-button {
+  font-size: 18px;
+}
+
+.conversation-empty h3,
+.sidebar-header h1 {
+  font-size: 20px;
+}
+
+.message-bubble footer,
+.file-details span {
+  font-size: 14px;
 }
 
 @media (max-width: 860px) {
