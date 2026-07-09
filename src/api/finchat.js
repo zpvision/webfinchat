@@ -810,16 +810,20 @@ export class FinchatRealtimeClient {
 
     const sendPub = async () => {
       const id = this.nextId(pub.idPrefix || 'pub');
+      const { extra, ...payload } = pub.payload || {};
+      const clientPacket = {
+        pub: {
+          ...payload,
+          id,
+          topic,
+        },
+      };
 
-      this.socket.send(
-        JSON.stringify({
-          pub: {
-            ...pub.payload,
-            id,
-            topic,
-          },
-        }),
-      );
+      if (pub.extra || extra) {
+        clientPacket.extra = pub.extra || extra;
+      }
+
+      this.socket.send(JSON.stringify(clientPacket));
 
       const packet = await waitForPacket(this.socket, (message) => message.ctrl?.id === id, 15000);
 
@@ -1013,13 +1017,13 @@ export class FinchatRealtimeClient {
 
     const packet = await this.publish(topic, {
       idPrefix: 'pub-file',
+      extra: {
+        attachments: uploadedFiles.map((uploadedFile) => uploadedFile.ref),
+      },
       payload: {
         noecho: true,
         head,
         content,
-        extra: {
-          attachments: uploadedFiles.map((uploadedFile) => uploadedFile.ref),
-        },
       },
     });
 

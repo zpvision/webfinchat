@@ -760,20 +760,24 @@ html[data-theme="dark"] .message-date-label {
 }
 
 html[data-theme="dark"] .message-bubble {
-  color: #e8e4f5;
-  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #353b64;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
 }
 
 html[data-theme="dark"] .message-bubble.mine {
+  border: 0;
   color: #ffffff;
-  background: linear-gradient(135deg, #c77ed9 0%, #b566ce 100%);
+  background: linear-gradient(90deg, #7638b7 0%, #ab0bb6 100%);
+  box-shadow: none;
 }
 
 .message-bubble.mine {
   align-self: flex-end;
   border-bottom-right-radius: 4px;
   color: #ffffff;
-  background: linear-gradient(135deg, var(--fc-own-1) 0%, var(--fc-own-2) 100%);
+  background: linear-gradient(90deg, #7638b7 0%, #ab0bb6 100%);
 }
 
 .message-bubble.menu-open {
