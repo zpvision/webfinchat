@@ -539,6 +539,20 @@ function PdfViewer({ file, token, onClose }) {
 
       try {
         const nextViewUrl = await createPdfViewUrl({ token, ref: file.ref, name: file.name });
+        const checkResponse = await fetch(nextViewUrl, { cache: 'no-store' });
+
+        if (!checkResponse.ok) {
+          const errorText = await checkResponse.text();
+          throw new Error(errorText || `Не удалось открыть PDF: ${checkResponse.status}.`);
+        }
+
+        const contentType = checkResponse.headers.get('content-type') || '';
+        const preview = new Uint8Array(await checkResponse.clone().arrayBuffer()).slice(0, 5);
+        const isPdf = contentType.includes('application/pdf') || String.fromCharCode(...preview) === '%PDF-';
+
+        if (!isPdf) {
+          throw new Error('Сервер вернул не PDF-файл.');
+        }
 
         if (active) {
           setViewUrl(nextViewUrl);

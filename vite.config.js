@@ -363,6 +363,24 @@ function fileProxyPlugin(env) {
             return;
           }
 
+          if (!fileBody.subarray(0, 5).equals(Buffer.from('%PDF-'))) {
+            const contentType = fileResponse.headers.get('content-type') || '';
+            let errorText = fileBody.toString('utf8', 0, Math.min(fileBody.length, 500));
+
+            if (contentType.includes('application/json')) {
+              try {
+                const parsed = JSON.parse(fileBody.toString('utf8'));
+                errorText = parsed?.error || parsed?.err || parsed?.ctrl?.text || errorText;
+              } catch {
+                // Keep text preview.
+              }
+            }
+
+            response.statusCode = 502;
+            response.end(errorText || 'Server returned a non-PDF response');
+            return;
+          }
+
           response.statusCode = 200;
           response.setHeader('X-Content-Type-Options', 'nosniff');
           response.setHeader('Referrer-Policy', 'no-referrer');
