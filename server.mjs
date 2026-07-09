@@ -38,6 +38,7 @@ const PORT = Number(process.env.PORT || 4173);
 const FINCHAT_HOST = process.env.FINCHAT_HOST || 'api.dev.finchat.club';
 const FINCHAT_API_KEY = process.env.FINCHAT_API_KEY || '';
 const MAX_FILE_BYTES = Number(process.env.MAX_FILE_BYTES || 50 * 1024 * 1024);
+const MAX_DOWNLOAD_BYTES = Number(process.env.MAX_DOWNLOAD_BYTES || MAX_FILE_BYTES);
 const DIST_DIR = resolve('dist');
 
 const MIME_TYPES = {
@@ -56,6 +57,42 @@ function singleHeader(value) {
   return Array.isArray(value) ? value[0] : value;
 }
 
+function safeHeaderValue(value) {
+  const header = singleHeader(value);
+
+  if (typeof header !== 'string') {
+    return '';
+  }
+
+  return /^[\t\x20-\x7e]*$/.test(header) && !/[\r\n]/.test(header) ? header : '';
+}
+
+function isAllowedOrigin(request) {
+  const origin = safeHeaderValue(request.headers.origin);
+
+  if (!origin) {
+    return true;
+  }
+
+  const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  if (allowedOrigins.includes(origin)) {
+    return true;
+  }
+
+  try {
+    const originUrl = new URL(origin);
+    const host = safeHeaderValue(request.headers.host);
+
+    return Boolean(host && originUrl.host === host && ['http:', 'https:'].includes(originUrl.protocol));
+  } catch {
+    return false;
+  }
+}
+
 function setSecurityHeaders(response) {
   const connectSrc = [
     "'self'",
@@ -66,7 +103,10 @@ function setSecurityHeaders(response) {
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('Referrer-Policy', 'no-referrer');
   response.setHeader('X-Frame-Options', 'DENY');
+  response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
   response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  response.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   response.setHeader(
     'Content-Security-Policy',
     [
@@ -114,19 +154,64 @@ function readBody(request, maxBytes = MAX_FILE_BYTES) {
   });
 }
 
+async function readResponseBody(response, maxBytes = MAX_DOWNLOAD_BYTES) {
+  const contentLength = Number(response.headers.get('content-length') || 0);
+
+  if (contentLength > maxBytes) {
+    throw new Error('File is too large');
+  }
+
+  if (!response.body?.getReader) {
+    const body = Buffer.from(await response.arrayBuffer());
+
+    if (body.length > maxBytes) {
+      throw new Error('File is too large');
+    }
+
+    return body;
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+
+    if (done) {
+      return Buffer.concat(chunks);
+    }
+
+    size += value.byteLength;
+
+    if (size > maxBytes) {
+      await reader.cancel();
+      throw new Error('File is too large');
+    }
+
+    chunks.push(Buffer.from(value));
+  }
+}
+
 function normalizeFileRef(ref) {
   if (!ref) {
     return '';
   }
 
   if (ref.startsWith('http')) {
-    const url = new URL(ref);
+    let url;
+
+    try {
+      url = new URL(ref);
+    } catch {
+      return '';
+    }
 
     if (url.protocol !== 'https:' || url.hostname !== FINCHAT_HOST) {
       return '';
     }
 
-    return `${url.pathname}${url.search}`;
+    ref = `${url.pathname}${url.search}`;
   }
 
   if (!ref.startsWith('/')) {
@@ -134,7 +219,11 @@ function normalizeFileRef(ref) {
   }
 
   if (!ref.startsWith('/v0/')) {
-    return `/v0/file/s${ref}`;
+    ref = `/v0/file/s${ref}`;
+  }
+
+  if (!ref.startsWith('/v0/file/')) {
+    return '';
   }
 
   return ref;
@@ -271,7 +360,14 @@ async function handleDownload(request, response) {
     },
     redirect: 'follow',
   });
-  const fileBody = Buffer.from(await fileResponse.arrayBuffer());
+  let fileBody;
+
+  try {
+    fileBody = await readResponseBody(fileResponse);
+  } catch (error) {
+    send(response, 413, error.message || 'File is too large');
+    return;
+  }
   const contentType = fileResponse.headers.get('content-type') || 'application/octet-stream';
 
   if (!fileResponse.ok) {
@@ -324,6 +420,19 @@ function proxyWebSocket(request, socket, head) {
     return;
   }
 
+  if (!isAllowedOrigin(request)) {
+    socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    return;
+  }
+
+  const websocketKey = safeHeaderValue(request.headers['sec-websocket-key']);
+  const websocketVersion = safeHeaderValue(request.headers['sec-websocket-version']) || '13';
+
+  if (!websocketKey || !/^[A-Za-z0-9+/=]{16,128}$/.test(websocketKey) || !/^\d+$/.test(websocketVersion)) {
+    socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+    return;
+  }
+
   const upstreamPath = new URL('/v0/channels', `https://${FINCHAT_HOST}`);
 
   if (FINCHAT_API_KEY) {
@@ -336,16 +445,18 @@ function proxyWebSocket(request, socket, head) {
       `Host: ${FINCHAT_HOST}`,
       'Connection: Upgrade',
       'Upgrade: websocket',
-      `Sec-WebSocket-Key: ${request.headers['sec-websocket-key']}`,
-      `Sec-WebSocket-Version: ${request.headers['sec-websocket-version'] || '13'}`,
-      request.headers.origin ? `Origin: ${request.headers.origin}` : '',
-      request.headers['user-agent'] ? `User-Agent: ${request.headers['user-agent']}` : '',
-      request.headers['accept-language'] ? `Accept-Language: ${request.headers['accept-language']}` : '',
-      request.headers['sec-websocket-extensions']
-        ? `Sec-WebSocket-Extensions: ${request.headers['sec-websocket-extensions']}`
+      `Sec-WebSocket-Key: ${websocketKey}`,
+      `Sec-WebSocket-Version: ${websocketVersion}`,
+      safeHeaderValue(request.headers.origin) ? `Origin: ${safeHeaderValue(request.headers.origin)}` : '',
+      safeHeaderValue(request.headers['user-agent']) ? `User-Agent: ${safeHeaderValue(request.headers['user-agent'])}` : '',
+      safeHeaderValue(request.headers['accept-language'])
+        ? `Accept-Language: ${safeHeaderValue(request.headers['accept-language'])}`
         : '',
-      request.headers['sec-websocket-protocol']
-        ? `Sec-WebSocket-Protocol: ${request.headers['sec-websocket-protocol']}`
+      safeHeaderValue(request.headers['sec-websocket-extensions'])
+        ? `Sec-WebSocket-Extensions: ${safeHeaderValue(request.headers['sec-websocket-extensions'])}`
+        : '',
+      safeHeaderValue(request.headers['sec-websocket-protocol'])
+        ? `Sec-WebSocket-Protocol: ${safeHeaderValue(request.headers['sec-websocket-protocol'])}`
         : '',
     ].filter(Boolean).join('\r\n') + '\r\n\r\n';
 

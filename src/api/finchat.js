@@ -907,11 +907,16 @@ export class FinchatRealtimeClient {
     }
   }
 
-  async getMessages(topic, { limit = 30, beforeSeq } = {}) {
+  async getMessages(topic, { limit = 30, beforeSeq, sinceSeq } = {}) {
     const id = this.nextId('get-data');
     const data = {
       limit,
     };
+
+    if (sinceSeq) {
+      data.since = sinceSeq;
+      data.since_id = sinceSeq;
+    }
 
     if (beforeSeq) {
       data.before = beforeSeq;
@@ -1242,7 +1247,7 @@ export async function loadChatList(token) {
   }
 }
 
-export async function loadTopicMessages(token, topic, { limit = 30, beforeSeq } = {}) {
+export async function loadTopicMessages(token, topic, { limit = 30, beforeSeq, sinceSeq } = {}) {
   if (!token) {
     throw new Error('Нет токена авторизации для загрузки сообщений.');
   }
@@ -1273,6 +1278,11 @@ export async function loadTopicMessages(token, topic, { limit = 30, beforeSeq } 
       limit,
     };
 
+    if (sinceSeq) {
+      data.since = sinceSeq;
+      data.since_id = sinceSeq;
+    }
+
     if (beforeSeq) {
       data.before = beforeSeq;
       data.before_id = beforeSeq;
@@ -1301,6 +1311,22 @@ export async function loadTopicMessages(token, topic, { limit = 30, beforeSeq } 
       socket.close();
     }
   }
+}
+
+export async function loadTopicMessageBySeq(token, topic, seq) {
+  const targetSeq = Number(seq);
+
+  if (!Number.isFinite(targetSeq)) {
+    return null;
+  }
+
+  const messages = await loadTopicMessages(token, topic, {
+    sinceSeq: targetSeq,
+    beforeSeq: targetSeq + 1,
+    limit: 1,
+  });
+
+  return messages.find((message) => Number(message.seq) === targetSeq) || null;
 }
 
 export async function sendTopicMessage({ token, topic, text, replyTo }) {

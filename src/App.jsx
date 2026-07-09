@@ -1,4 +1,5 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   FinchatRealtimeClient,
   downloadAttachmentFile,
@@ -6,10 +7,12 @@ import {
   getDeletedRanges,
   hasApiKey,
   loadChatList,
+  loadTopicMessageBySeq,
   loadTopicMessages,
   loginWithWordColor,
   normalizeMessage,
 } from './api/finchat.js';
+import attachIconSrc from '../attach.svg';
 import logoSrc from './assets/logo_512.png';
 
 const initialForm = {
@@ -20,7 +23,9 @@ const initialForm = {
 };
 const SESSION_STORAGE_KEY = 'finchatSession';
 const TOKEN_STORAGE_KEY = 'finchatToken';
+const INITIAL_MESSAGE_PAGE_SIZE = 10;
 const MESSAGE_PAGE_SIZE = 30;
+const MAX_QUOTED_MESSAGE_LOOKUP_PAGES = 20;
 
 function loadStoredSession() {
   try {
@@ -206,13 +211,19 @@ function getChatPreview(chat) {
   return chat.preview || (chat.isGroup ? 'Группа' : 'Диалог');
 }
 
-function getReplyPreview(reply, messages) {
+function getReplyPreview(reply, messages, replyPreviews = {}) {
   if (!reply) {
     return '';
   }
 
   if (reply.text) {
     return reply.text;
+  }
+
+  const cachedPreview = replyPreviews[Number(reply.seq)];
+
+  if (cachedPreview) {
+    return cachedPreview;
   }
 
   const quotedMessage = messages.find((message) => Number(message.seq) === Number(reply.seq));
@@ -287,6 +298,16 @@ function isSameMessage(left, right) {
   );
 }
 
+function mergeMessageLists(left, right) {
+  return [...left, ...right].reduce((items, message) => {
+    if (!items.some((item) => isSameMessage(item, message))) {
+      items.push(message);
+    }
+
+    return items;
+  }, []).sort((leftMessage, rightMessage) => Number(leftMessage.seq || 0) - Number(rightMessage.seq || 0));
+}
+
 async function loadMessagesWithRetry({ token, topic, beforeSeq, limit = MESSAGE_PAGE_SIZE }) {
   let lastError = null;
 
@@ -313,6 +334,9 @@ async function loadMessagesWithRetry({ token, topic, beforeSeq, limit = MESSAGE_
 
 function ImageViewer({ image, onClose }) {
   const [rotation, setRotation] = useState(0);
+  const [zoom, setZoom] = useState(1);
+  const normalizedRotation = ((rotation % 360) + 360) % 360;
+  const isSideways = normalizedRotation === 90 || normalizedRotation === 270;
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -326,32 +350,78 @@ function ImageViewer({ image, onClose }) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
+  useEffect(() => {
+    if (!image) {
+      return undefined;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [image]);
+
+  useEffect(() => {
+    setRotation(0);
+    setZoom(1);
+  }, [image?.url]);
+
   if (!image) {
     return null;
   }
 
-  return (
+  return createPortal(
     <div className="image-modal" role="dialog" aria-modal="true" onClick={onClose}>
       <div className="image-modal-panel" onClick={(event) => event.stopPropagation()}>
         <div className="image-modal-toolbar">
           <strong>{image.name}</strong>
           <div>
+            <button
+              type="button"
+              onClick={() => setZoom((current) => Math.max(0.5, Number((current - 0.25).toFixed(2))))}
+              title="Уменьшить"
+            >
+              −
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom((current) => Math.min(3, Number((current + 0.25).toFixed(2))))}
+              title="Увеличить"
+            >
+              +
+            </button>
             <button type="button" onClick={() => setRotation((current) => current - 90)} title="Повернуть влево">
               ↺
             </button>
             <button type="button" onClick={() => setRotation((current) => current + 90)} title="Повернуть вправо">
               ↻
             </button>
+            <a className="modal-download-button" href={image.url} download={image.name}>
+              Скачать
+            </a>
             <button type="button" onClick={onClose} title="Закрыть">
               ×
             </button>
           </div>
         </div>
         <div className="image-modal-stage">
-          <img alt={image.name} src={image.url} style={{ transform: `rotate(${rotation}deg)` }} />
+          <img
+            alt={image.name}
+            src={image.url}
+            style={{
+              '--image-zoom': zoom,
+              '--image-rotation': `${rotation}deg`,
+              maxHeight: isSideways ? 'min(62vw, 100%)' : '100%',
+              maxWidth: isSideways ? 'min(62vh, 100%)' : '100%',
+            }}
+          />
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -403,7 +473,16 @@ function AttachmentImage({ attachment, token, onOpen, onLoad }) {
   }
 
   return (
-    <button className="image-attachment" type="button" onClick={() => onOpen({ name: attachment.name, url: objectUrl })}>
+    <button
+      className="image-attachment"
+      type="button"
+      onClick={() => onOpen({ name: attachment.name, url: objectUrl })}
+      style={
+        attachment.width && attachment.height
+          ? { aspectRatio: `${attachment.width} / ${attachment.height}` }
+          : undefined
+      }
+    >
       <img
         alt={attachment.name}
         height={attachment.height || undefined}
@@ -416,10 +495,114 @@ function AttachmentImage({ attachment, token, onOpen, onLoad }) {
   );
 }
 
+function isPdfAttachment(attachment) {
+  return attachment?.mime === 'application/pdf' || /\.pdf$/i.test(attachment?.name || '');
+}
+
+function PdfViewer({ file, token, onClose }) {
+  const [objectUrl, setObjectUrl] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  useEffect(() => {
+    if (!file) {
+      return undefined;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [file]);
+
+  useEffect(() => {
+    let active = true;
+    let nextObjectUrl = '';
+
+    async function loadPdf() {
+      setError('');
+      setObjectUrl('');
+
+      try {
+        const blob = await fetchAttachmentBlob({ token, ref: file.ref });
+        nextObjectUrl = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
+
+        if (active) {
+          setObjectUrl(nextObjectUrl);
+        }
+      } catch (requestError) {
+        if (active) {
+          setError(requestError.message || 'Не удалось открыть PDF.');
+        }
+      }
+    }
+
+    if (file) {
+      loadPdf();
+    }
+
+    return () => {
+      active = false;
+
+      if (nextObjectUrl) {
+        URL.revokeObjectURL(nextObjectUrl);
+      }
+    };
+  }, [file, token]);
+
+  if (!file) {
+    return null;
+  }
+
+  return createPortal(
+    <div className="image-modal" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="image-modal-panel pdf-modal-panel" onClick={(event) => event.stopPropagation()}>
+        <div className="image-modal-toolbar">
+          <strong>{file.name}</strong>
+          <div>
+            <button
+              className="modal-download-button"
+              type="button"
+              onClick={() => downloadAttachmentFile({ token, ref: file.ref, name: file.name })}
+              title="Скачать"
+            >
+              Скачать
+            </button>
+            <button type="button" onClick={onClose} title="Закрыть">
+              ×
+            </button>
+          </div>
+        </div>
+        <div className="pdf-modal-stage">
+          {error && <span className="attachment-error">{error}</span>}
+          {!error && !objectUrl && <span className="attachment-loading">Загружаем PDF...</span>}
+          {objectUrl && <iframe title={file.name} src={objectUrl} />}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 function MessageAttachments({ attachments, token, onMediaLoad }) {
   const [downloadingId, setDownloadingId] = useState('');
   const [downloadError, setDownloadError] = useState('');
   const [viewerImage, setViewerImage] = useState(null);
+  const [viewerPdf, setViewerPdf] = useState(null);
 
   if (!attachments?.length) {
     return null;
@@ -455,10 +638,10 @@ function MessageAttachments({ attachments, token, onMediaLoad }) {
           />
         ) : (
           <button
-            className="file-attachment"
+            className={`file-attachment ${isPdfAttachment(attachment) ? 'pdf-attachment' : ''}`}
             key={attachment.id}
             type="button"
-            onClick={() => downloadFile(attachment)}
+            onClick={() => (isPdfAttachment(attachment) ? setViewerPdf(attachment) : downloadFile(attachment))}
             disabled={downloadingId === attachment.id}
           >
             <span className="file-icon" aria-hidden="true">
@@ -469,7 +652,10 @@ function MessageAttachments({ attachments, token, onMediaLoad }) {
               <span>
                 {downloadingId === attachment.id
                   ? 'Скачиваем...'
-                  : [attachment.mime, formatFileSize(attachment.size)].filter(Boolean).join(' · ')}
+                  : [
+                      isPdfAttachment(attachment) ? 'Открыть PDF' : attachment.mime,
+                      formatFileSize(attachment.size),
+                    ].filter(Boolean).join(' · ')}
               </span>
             </span>
           </button>
@@ -477,6 +663,7 @@ function MessageAttachments({ attachments, token, onMediaLoad }) {
       )}
       {downloadError && <span className="attachment-error">{downloadError}</span>}
       <ImageViewer image={viewerImage} onClose={() => setViewerImage(null)} />
+      <PdfViewer file={viewerPdf} token={token} onClose={() => setViewerPdf(null)} />
     </div>
   );
 }
@@ -541,8 +728,8 @@ function LoginScreen({ onLogin }) {
           <p className="eyebrow">FinChat</p>
           <h1 id="auth-title">Вход в аккаунт</h1>
           <p>
-            Авторизация по схеме wordcolor через FinChat WebSocket API. После входа откроется
-            список чатов из Tinode topic `me`.
+            Авторизация по схеме wordcolor через FinChat API. После входа откроется
+            список ваших чатов.
           </p>
         </div>
 
@@ -637,6 +824,7 @@ function LoginScreen({ onLogin }) {
 function Conversation({ chat, client, session, onChatActivity }) {
   const [messages, setMessages] = useState([]);
   const [status, setStatus] = useState('idle');
+  const [messagesVisible, setMessagesVisible] = useState(false);
   const [error, setError] = useState('');
   const [draft, setDraft] = useState('');
   const [replyTo, setReplyTo] = useState(null);
@@ -646,11 +834,24 @@ function Conversation({ chat, client, session, onChatActivity }) {
   const [sendStatus, setSendStatus] = useState('idle');
   const [hasOlderMessages, setHasOlderMessages] = useState(false);
   const [olderStatus, setOlderStatus] = useState('idle');
+  const [highlightedSeq, setHighlightedSeq] = useState(null);
+  const [replyPreviews, setReplyPreviews] = useState({});
   const messageAreaRef = useRef(null);
   const messageEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const preserveScrollRef = useRef(false);
   const stickToBottomRef = useRef(true);
+  const firstPaintRef = useRef(true);
+  const initialBottomLockRef = useRef(false);
+  const bottomLockTimerRef = useRef(null);
+  const pendingScrollRestoreRef = useRef(null);
+  const highlightTimerRef = useRef(null);
+  const resolvedReplySeqsRef = useRef(new Set());
+  const currentTopicRef = useRef(chat?.topic || '');
+
+  useEffect(() => {
+    currentTopicRef.current = chat?.topic || '';
+  }, [chat?.topic]);
 
   useEffect(() => {
     let active = true;
@@ -661,6 +862,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
       }
 
       setStatus('loading');
+      setMessagesVisible(false);
       setError('');
       setMessages([]);
       setReplyTo(null);
@@ -669,16 +871,27 @@ function Conversation({ chat, client, session, onChatActivity }) {
       setSelectedFiles([]);
       setHasOlderMessages(false);
       setOlderStatus('idle');
+      setHighlightedSeq(null);
+      setReplyPreviews({});
+      firstPaintRef.current = true;
+      initialBottomLockRef.current = true;
+      stickToBottomRef.current = true;
+      pendingScrollRestoreRef.current = null;
+      resolvedReplySeqsRef.current = new Set();
 
       try {
-        const items = await loadMessagesWithRetry({ token: session.token, topic: chat.topic });
+        const items = await loadMessagesWithRetry({
+          token: session.token,
+          topic: chat.topic,
+          limit: INITIAL_MESSAGE_PAGE_SIZE,
+        });
 
         if (!active) {
           return;
         }
 
         setMessages(items);
-        setHasOlderMessages(items.length === MESSAGE_PAGE_SIZE);
+        setHasOlderMessages(items.length === INITIAL_MESSAGE_PAGE_SIZE);
         if (items.length > 0) {
           onChatActivity?.(items[items.length - 1]);
         }
@@ -751,30 +964,198 @@ function Conversation({ chat, client, session, onChatActivity }) {
           return current;
         }
 
-        return [...current, incomingMessage].sort(
-          (left, right) => Number(left.seq || 0) - Number(right.seq || 0),
-        );
+        return mergeMessageLists(current, [incomingMessage]);
       });
     });
   }, [chat?.topic, client]);
 
   useEffect(() => {
+    if (status !== 'ready' || !chat?.topic || messages.length === 0) {
+      return;
+    }
+
+    const requestTopic = chat.topic;
+    const loadedSeqs = new Set(
+        messages
+          .map((message) => Number(message.seq))
+          .filter((seq) => Number.isFinite(seq)),
+    );
+    const firstSeq = Math.min(...loadedSeqs);
+    const missingReplySeqs = Array.from(
+      new Set(
+        messages
+          .map((message) => Number(message.reply?.seq))
+          .filter(
+            (seq) =>
+              Number.isFinite(seq) &&
+              !loadedSeqs.has(seq) &&
+              !replyPreviews[seq] &&
+              !resolvedReplySeqsRef.current.has(seq),
+          ),
+      ),
+    );
+
+    if (missingReplySeqs.length === 0) {
+      return;
+    }
+
+    missingReplySeqs.forEach((seq) => {
+      resolvedReplySeqsRef.current.add(seq);
+
+      loadTopicMessageBySeq(session.token, chat.topic, seq)
+        .then(async (message) => {
+          let quotedMessage = message;
+
+          if (!quotedMessage && Number.isFinite(firstSeq) && seq < firstSeq) {
+            let beforeSeq = firstSeq;
+
+            for (let page = 0; page < MAX_QUOTED_MESSAGE_LOOKUP_PAGES; page += 1) {
+              const olderItems = await loadMessagesWithRetry({
+                token: session.token,
+                topic: requestTopic,
+                beforeSeq,
+              });
+
+              quotedMessage = olderItems.find((item) => Number(item.seq) === seq);
+
+              if (quotedMessage || olderItems.length === 0) {
+                break;
+              }
+
+              const nextBeforeSeq = Math.min(...olderItems.map((item) => Number(item.seq || Infinity)));
+
+              if (!Number.isFinite(nextBeforeSeq) || nextBeforeSeq >= beforeSeq || seq >= nextBeforeSeq) {
+                break;
+              }
+
+              beforeSeq = nextBeforeSeq;
+            }
+          }
+
+          if (requestTopic !== currentTopicRef.current) {
+            return;
+          }
+
+          if (!quotedMessage) {
+            resolvedReplySeqsRef.current.delete(seq);
+            return;
+          }
+
+          const preview = quotedMessage.text || quotedMessage.preview;
+
+          if (preview) {
+            setReplyPreviews((current) => ({
+              ...current,
+              [seq]: preview,
+            }));
+          } else {
+            resolvedReplySeqsRef.current.delete(seq);
+          }
+        })
+        .catch(() => {
+          resolvedReplySeqsRef.current.delete(seq);
+        });
+    });
+  }, [messages, replyPreviews, status, chat?.topic, session.token]);
+
+  useEffect(() => () => {
+    if (highlightTimerRef.current) {
+      window.clearTimeout(highlightTimerRef.current);
+    }
+
+    if (bottomLockTimerRef.current) {
+      window.clearTimeout(bottomLockTimerRef.current);
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    if (status !== 'ready' || messages.length === 0) {
+      return;
+    }
+
+    const scrollContainer = messageAreaRef.current;
+
+    if (!scrollContainer) {
+      return;
+    }
+
     if (preserveScrollRef.current) {
       preserveScrollRef.current = false;
+
+      const restore = pendingScrollRestoreRef.current;
+      pendingScrollRestoreRef.current = null;
+
+      if (restore) {
+        if (Number.isFinite(restore.bottomOffset)) {
+          scrollContainer.scrollTop = scrollContainer.scrollHeight - restore.bottomOffset;
+        } else if (Number.isFinite(restore.scrollHeight) && Number.isFinite(restore.scrollTop)) {
+          scrollContainer.scrollTop = scrollContainer.scrollHeight - restore.scrollHeight + restore.scrollTop;
+        }
+      }
+
+      if (!messagesVisible) {
+        setMessagesVisible(true);
+      }
+
       return;
     }
 
     stickToBottomRef.current = true;
-    messageEndRef.current?.scrollIntoView({ block: 'end' });
+
+    if (firstPaintRef.current) {
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      firstPaintRef.current = false;
+    } else {
+      messageEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
+    }
+
+    if (!messagesVisible) {
+      setMessagesVisible(true);
+    }
+
+    if (initialBottomLockRef.current) {
+      if (bottomLockTimerRef.current) {
+        window.clearTimeout(bottomLockTimerRef.current);
+      }
+
+      bottomLockTimerRef.current = window.setTimeout(() => {
+        initialBottomLockRef.current = false;
+      }, 2500);
+    }
+  }, [messages.length, status]);
+
+  useEffect(() => {
+    if (status !== 'ready' || messages.length === 0 || !initialBottomLockRef.current) {
+      return undefined;
+    }
+
+    const lockStartedAt = Date.now();
+    const intervalId = window.setInterval(() => {
+      if (!initialBottomLockRef.current || Date.now() - lockStartedAt > 2500) {
+        window.clearInterval(intervalId);
+        initialBottomLockRef.current = false;
+        return;
+      }
+
+      if (stickToBottomRef.current) {
+        const scrollContainer = messageAreaRef.current;
+
+        if (scrollContainer) {
+          scrollContainer.scrollTop = scrollContainer.scrollHeight;
+        }
+      }
+    }, 120);
+
+    return () => window.clearInterval(intervalId);
   }, [messages.length, status]);
 
   const scrollToBottomIfNeeded = () => {
-    if (!stickToBottomRef.current || preserveScrollRef.current) {
+    if ((!stickToBottomRef.current && !initialBottomLockRef.current) || preserveScrollRef.current) {
       return;
     }
 
     window.requestAnimationFrame(() => {
-      messageEndRef.current?.scrollIntoView({ block: 'end' });
+      messageEndRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' });
     });
   };
 
@@ -805,26 +1186,122 @@ function Conversation({ chat, client, session, onChatActivity }) {
       });
 
       preserveScrollRef.current = true;
+      pendingScrollRestoreRef.current = scrollContainer
+        ? {
+            scrollHeight: previousScrollHeight,
+            scrollTop: previousScrollTop,
+          }
+        : null;
       setMessages((current) => {
         const knownKeys = new Set(current.map((message) => message.seq || message.id));
         const uniqueOlderItems = olderItems.filter((message) => !knownKeys.has(message.seq || message.id));
 
-        return [...uniqueOlderItems, ...current].sort(
-          (left, right) => Number(left.seq || 0) - Number(right.seq || 0),
-        );
+        return mergeMessageLists(uniqueOlderItems, current);
       });
       setHasOlderMessages(olderItems.length === MESSAGE_PAGE_SIZE);
       setOlderStatus('idle');
 
-      window.requestAnimationFrame(() => {
-        if (!scrollContainer) {
-          return;
-        }
-
-        scrollContainer.scrollTop = scrollContainer.scrollHeight - previousScrollHeight + previousScrollTop;
-      });
     } catch (requestError) {
       setError(requestError.message || 'Не удалось загрузить предыдущие сообщения.');
+      setOlderStatus('idle');
+    }
+  };
+
+  const scrollToMessage = (seq) => {
+    const targetSeq = Number(seq);
+
+    if (!Number.isFinite(targetSeq)) {
+      return false;
+    }
+
+    const target = messageAreaRef.current?.querySelector(`[data-message-seq="${targetSeq}"]`);
+
+    if (!target) {
+      return false;
+    }
+
+    setHighlightedSeq(targetSeq);
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+
+    if (highlightTimerRef.current) {
+      window.clearTimeout(highlightTimerRef.current);
+    }
+
+    highlightTimerRef.current = window.setTimeout(() => {
+      setHighlightedSeq((current) => (Number(current) === targetSeq ? null : current));
+    }, 1800);
+
+    return true;
+  };
+
+  const jumpToQuotedMessage = async (reply) => {
+    const targetSeq = Number(reply?.seq);
+
+    if (!Number.isFinite(targetSeq) || !chat?.topic || olderStatus === 'loading') {
+      return;
+    }
+
+    setError('');
+
+    if (messages.some((message) => Number(message.seq) === targetSeq)) {
+      scrollToMessage(targetSeq);
+      return;
+    }
+
+    let loadedMessages = messages;
+    let firstSeq = Math.min(...loadedMessages.map((message) => Number(message.seq || Infinity)));
+
+    if (!Number.isFinite(firstSeq) || targetSeq >= firstSeq) {
+      setError('Цитируемое сообщение не найдено в загруженной истории.');
+      return;
+    }
+
+    setOlderStatus('loading');
+
+    try {
+      let found = false;
+
+      for (let page = 0; page < MAX_QUOTED_MESSAGE_LOOKUP_PAGES; page += 1) {
+        const olderItems = await loadMessagesWithRetry({
+          token: session.token,
+          topic: chat.topic,
+          beforeSeq: firstSeq,
+        });
+
+        if (olderItems.length === 0) {
+          setHasOlderMessages(false);
+          setError('Цитируемое сообщение не найдено в истории чата.');
+          break;
+        }
+
+        loadedMessages = mergeMessageLists(olderItems, loadedMessages);
+        firstSeq = Math.min(...loadedMessages.map((message) => Number(message.seq || Infinity)));
+        preserveScrollRef.current = true;
+        setMessages(loadedMessages);
+        setHasOlderMessages(olderItems.length === MESSAGE_PAGE_SIZE);
+
+        if (loadedMessages.some((message) => Number(message.seq) === targetSeq)) {
+          found = true;
+          window.requestAnimationFrame(() => {
+            window.requestAnimationFrame(() => {
+              scrollToMessage(targetSeq);
+            });
+          });
+          break;
+        }
+
+        if (olderItems.length < MESSAGE_PAGE_SIZE || targetSeq >= firstSeq) {
+          setError('Цитируемое сообщение не найдено в истории чата.');
+          break;
+        }
+      }
+
+      if (!found) {
+        setError('Цитируемое сообщение не найдено в ближайшей истории чата.');
+      }
+    } catch (requestError) {
+      setError(requestError.message || 'Не удалось загрузить цитируемое сообщение.');
+    } finally {
       setOlderStatus('idle');
     }
   };
@@ -1042,7 +1519,13 @@ function Conversation({ chat, client, session, onChatActivity }) {
       </header>
 
       <div className="message-area" ref={messageAreaRef} onScroll={handleMessageScroll}>
-        {status === 'loading' && <div className="conversation-empty">Загружаем сообщения...</div>}
+        {status === 'loading' && (
+          <div className="message-list message-list-loading" aria-busy="true">
+            <div className="message-skeleton incoming" />
+            <div className="message-skeleton incoming short" />
+            <div className="message-skeleton outgoing" />
+          </div>
+        )}
 
         {status === 'error' && (
           <div className="conversation-empty error-line">
@@ -1059,7 +1542,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
         )}
 
         {status === 'ready' && messages.length > 0 && (
-          <div className="message-list">
+          <div className={`message-list ${messagesVisible ? 'message-list-visible' : 'message-list-preparing'}`}>
             {olderStatus === 'loading' && <div className="history-loader">Загружаем предыдущие сообщения...</div>}
             {messages.map((message, index) => {
               const mine = message.from === session.user;
@@ -1071,14 +1554,20 @@ function Conversation({ chat, client, session, onChatActivity }) {
                 <div className="message-item-group" key={message.id}>
                   {showDate && <div className="message-date-label">{formatMessageDate(message.createdAt)}</div>}
                   <article
-                    className={`message-bubble ${mine ? 'mine' : ''} ${messageMenu?.message?.id === message.id ? 'menu-open' : ''}`}
+                    className={`message-bubble ${mine ? 'mine' : ''} ${messageMenu?.message?.id === message.id ? 'menu-open' : ''} ${Number(highlightedSeq) === Number(message.seq) ? 'message-highlight' : ''}`}
+                    data-message-seq={message.seq || undefined}
                     onContextMenu={(event) => openMessageMenu(event, message)}
                   >
                     {message.reply && (
-                      <div className="reply-preview">
+                      <button
+                        className="reply-preview reply-preview-clickable"
+                        type="button"
+                        onClick={() => jumpToQuotedMessage(message.reply)}
+                        title="Перейти к цитируемому сообщению"
+                      >
                         <strong>Ответ на сообщение</strong>
-                        <span>{getReplyPreview(message.reply, messages)}</span>
-                      </div>
+                        <span>{getReplyPreview(message.reply, messages, replyPreviews)}</span>
+                      </button>
                     )}
                     {message.text && <p>{message.text}</p>}
                     <MessageAttachments
@@ -1200,7 +1689,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
             aria-label="Прикрепить файл"
             title="Прикрепить файл"
           >
-            <span className="composer-icon paperclip-icon" aria-hidden="true" />
+            <img className="attach-icon" src={attachIconSrc} alt="" aria-hidden="true" />
           </button>
           <input ref={fileInputRef} className="file-input" type="file" multiple onChange={selectFiles} />
           <textarea
@@ -1379,10 +1868,10 @@ function MessengerScreen({ session, onLogout, theme, onToggleTheme }) {
           </div>
           <div className="sidebar-actions">
             <button className="theme-button" type="button" onClick={onToggleTheme} title="Сменить тему" aria-label="Сменить тему">
-              <span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span>
+              <span aria-hidden="true">{theme === 'dark' ? '?' : '?'}</span>
             </button>
             <button className="logout-button" type="button" onClick={onLogout} title="Выйти" aria-label="Выйти">
-              <span aria-hidden="true">↗</span>
+              <span aria-hidden="true">?</span>
             </button>
           </div>
         </div>
@@ -1450,7 +1939,7 @@ function MessengerScreen({ session, onLogout, theme, onToggleTheme }) {
         <section className="conversation-panel" aria-label="Текущий чат">
           <div className="conversation-empty">
             <h3>Выберите чат</h3>
-            <p>После загрузки подписок Tinode они появятся в списке слева.</p>
+            <p>После загрузки ваши чаты появятся в списке слева.</p>
           </div>
         </section>
       )}
