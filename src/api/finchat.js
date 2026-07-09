@@ -1,4 +1,4 @@
-const PROTOCOL_VERSION = '0.22';
+﻿const PROTOCOL_VERSION = '0.22';
 
 function encodeBase64(value) {
   const bytes = new TextEncoder().encode(value);
@@ -127,13 +127,25 @@ export async function createPdfViewUrl({ token, ref, name }) {
     },
     body: JSON.stringify({ ref, name }),
   });
+  const responseText = await response.text();
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(errorText || `Не удалось открыть PDF: ${response.status}.`);
+    throw new Error(responseText || `Не удалось открыть PDF: ${response.status}.`);
   }
 
-  const payload = await response.json();
+  let payload;
+
+  try {
+    payload = JSON.parse(responseText);
+  } catch {
+    const preview = responseText.replace(/\s+/g, ' ').trim().slice(0, 120);
+
+    throw new Error(
+      preview.startsWith('<!doctype') || preview.startsWith('<html')
+        ? 'Сервер вернул HTML вместо JSON. Проверьте, что Node-сервер обновлен и маршрут /pdf-view-proxy доступен.'
+        : `Сервер вернул некорректный ответ для PDF: ${preview || 'пустой ответ'}.`,
+    );
+  }
 
   if (!payload.url) {
     throw new Error('Сервер не вернул ссылку для просмотра PDF.');
