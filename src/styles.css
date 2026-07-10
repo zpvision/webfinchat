@@ -420,6 +420,17 @@ html[data-theme="dark"] .composer-row {
   font-size: 15px;
 }
 
+.toolbar-svg-icon {
+  width: 19px;
+  height: 19px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .ghost-button:hover,
 .icon-button:hover,
 .theme-button:hover,

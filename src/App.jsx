@@ -2261,10 +2261,23 @@ function MessengerScreen({ session, onLogout, theme, onToggleTheme }) {
           </div>
           <div className="sidebar-actions">
             <button className="theme-button" type="button" onClick={onToggleTheme} title="Сменить тему" aria-label="Сменить тему">
-              <span aria-hidden="true">{theme === 'dark' ? '?' : '?'}</span>
+              {theme === 'dark' ? (
+                <svg className="toolbar-svg-icon" aria-hidden="true" viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="4" />
+                  <path d="M12 2v2.5M12 19.5V22M4.93 4.93 6.7 6.7M17.3 17.3l1.77 1.77M2 12h2.5M19.5 12H22M4.93 19.07 6.7 17.3M17.3 6.7l1.77-1.77" />
+                </svg>
+              ) : (
+                <svg className="toolbar-svg-icon" aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M20.5 14.3A7.8 7.8 0 0 1 9.7 3.5 8.6 8.6 0 1 0 20.5 14.3Z" />
+                </svg>
+              )}
             </button>
             <button className="logout-button" type="button" onClick={onLogout} title="Выйти" aria-label="Выйти">
-              <span aria-hidden="true">?</span>
+              <svg className="toolbar-svg-icon" aria-hidden="true" viewBox="0 0 24 24">
+                <path d="M10 6H6.8A2.8 2.8 0 0 0 4 8.8v6.4A2.8 2.8 0 0 0 6.8 18H10" />
+                <path d="M14 8l4 4-4 4" />
+                <path d="M18 12H9" />
+              </svg>
             </button>
           </div>
         </div>
