@@ -204,6 +204,38 @@ function getSelectedFileId(file, index) {
   return `${file.name}-${file.size}-${file.lastModified}-${index}`;
 }
 
+function getAudioRecorderMimeType() {
+  if (!window.MediaRecorder) {
+    return '';
+  }
+
+  return [
+    'audio/ogg;codecs=opus',
+    'audio/webm;codecs=opus',
+    'audio/mp4',
+  ].find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) || '';
+}
+
+function getAudioFileExtension(mimeType) {
+  if (mimeType.includes('ogg')) {
+    return 'ogg';
+  }
+
+  if (mimeType.includes('mp4')) {
+    return 'm4a';
+  }
+
+  return 'webm';
+}
+
+function formatRecordingTime(seconds) {
+  const safeSeconds = Math.max(0, Number(seconds) || 0);
+  const minutes = Math.floor(safeSeconds / 60);
+  const remainingSeconds = safeSeconds % 60;
+
+  return `${minutes}:${String(remainingSeconds).padStart(2, '0')}`;
+}
+
 function isPermissionDeniedError(error) {
   return error?.message?.toLowerCase().includes('permission denied');
 }
@@ -496,6 +528,89 @@ function AttachmentImage({ attachment, token, onOpen, onLoad }) {
   );
 }
 
+function AttachmentAudio({ attachment, token }) {
+  const [objectUrl, setObjectUrl] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    let nextObjectUrl = '';
+
+    async function loadAudio() {
+      setError('');
+      setObjectUrl('');
+
+      try {
+        const blob = await fetchAttachmentBlob({ token, ref: attachment.ref });
+
+        if (!active) {
+          return;
+        }
+
+        nextObjectUrl = URL.createObjectURL(blob);
+        setObjectUrl(nextObjectUrl);
+      } catch (requestError) {
+        if (active) {
+          setError(requestError.message || 'Не удалось загрузить голосовое сообщение.');
+        }
+      }
+    }
+
+    loadAudio();
+
+    return () => {
+      active = false;
+
+      if (nextObjectUrl) {
+        URL.revokeObjectURL(nextObjectUrl);
+      }
+    };
+  }, [attachment.ref, token]);
+
+  if (error) {
+    return <span className="attachment-error">{error}</span>;
+  }
+
+  if (!objectUrl) {
+    return <span className="attachment-loading">Загружаем голосовое сообщение...</span>;
+  }
+
+  return (
+    <div className="audio-attachment">
+      <span className="audio-attachment-icon" aria-hidden="true" />
+      <audio controls preload="metadata" src={objectUrl}>
+        <track kind="captions" />
+      </audio>
+    </div>
+  );
+}
+
+function ComposerAudioPreview({ file }) {
+  const [objectUrl, setObjectUrl] = useState('');
+
+  useEffect(() => {
+    if (!file) {
+      return undefined;
+    }
+
+    const nextObjectUrl = URL.createObjectURL(file);
+
+    setObjectUrl(nextObjectUrl);
+
+    return () => URL.revokeObjectURL(nextObjectUrl);
+  }, [file]);
+
+  if (!objectUrl) {
+    return null;
+  }
+
+  return (
+    <audio className="composer-audio-preview" controls preload="metadata" src={objectUrl}>
+      <track kind="captions" />
+    </audio>
+  );
+}
+
 function isPdfAttachment(attachment) {
   return attachment?.mime === 'application/pdf' || /\.pdf$/i.test(attachment?.name || '');
 }
@@ -645,6 +760,8 @@ function MessageAttachments({ attachments, token, onMediaLoad }) {
             onOpen={setViewerImage}
             onLoad={onMediaLoad}
           />
+        ) : attachment.type === 'audio' ? (
+          <AttachmentAudio attachment={attachment} key={attachment.id} token={token} />
         ) : (
           <button
             className={`file-attachment ${isPdfAttachment(attachment) ? 'pdf-attachment' : ''}`}
@@ -841,6 +958,10 @@ function Conversation({ chat, client, session, onChatActivity }) {
   const [messageMenu, setMessageMenu] = useState(null);
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [sendStatus, setSendStatus] = useState('idle');
+  const [recordingStatus, setRecordingStatus] = useState('idle');
+  const [recordingStartedAt, setRecordingStartedAt] = useState(null);
+  const [recordingElapsedSeconds, setRecordingElapsedSeconds] = useState(0);
+  const [voiceLevels, setVoiceLevels] = useState(Array.from({ length: 44 }, () => 0.2));
   const [hasOlderMessages, setHasOlderMessages] = useState(false);
   const [olderStatus, setOlderStatus] = useState('idle');
   const [highlightedSeq, setHighlightedSeq] = useState(null);
@@ -855,8 +976,25 @@ function Conversation({ chat, client, session, onChatActivity }) {
   const bottomLockTimerRef = useRef(null);
   const pendingScrollRestoreRef = useRef(null);
   const highlightTimerRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const recordingStreamRef = useRef(null);
+  const recordingChunksRef = useRef([]);
+  const recordingShouldSendRef = useRef(false);
+  const audioContextRef = useRef(null);
+  const analyserFrameRef = useRef(null);
   const resolvedReplySeqsRef = useRef(new Set());
   const currentTopicRef = useRef(chat?.topic || '');
+
+  const stopVoiceAnalyser = () => {
+    if (analyserFrameRef.current) {
+      window.cancelAnimationFrame(analyserFrameRef.current);
+      analyserFrameRef.current = null;
+    }
+
+    audioContextRef.current?.close?.();
+    audioContextRef.current = null;
+    setVoiceLevels(Array.from({ length: 44 }, () => 0.2));
+  };
 
   useEffect(() => {
     currentTopicRef.current = chat?.topic || '';
@@ -878,6 +1016,11 @@ function Conversation({ chat, client, session, onChatActivity }) {
       setEditingMessage(null);
       setMessageMenu(null);
       setSelectedFiles([]);
+      setRecordingStatus('idle');
+      setRecordingStartedAt(null);
+      setRecordingElapsedSeconds(0);
+      setVoiceLevels(Array.from({ length: 44 }, () => 0.2));
+      recordingShouldSendRef.current = false;
       setHasOlderMessages(false);
       setOlderStatus('idle');
       setHighlightedSeq(null);
@@ -1075,7 +1218,27 @@ function Conversation({ chat, client, session, onChatActivity }) {
     if (bottomLockTimerRef.current) {
       window.clearTimeout(bottomLockTimerRef.current);
     }
+
+    recordingShouldSendRef.current = false;
+    stopVoiceAnalyser();
+    mediaRecorderRef.current?.stop?.();
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
   }, []);
+
+  useEffect(() => {
+    if (recordingStatus !== 'recording' || !recordingStartedAt) {
+      return undefined;
+    }
+
+    const updateElapsed = () => {
+      setRecordingElapsedSeconds(Math.max(0, Math.floor((Date.now() - recordingStartedAt) / 1000)));
+    };
+    const intervalId = window.setInterval(updateElapsed, 250);
+
+    updateElapsed();
+
+    return () => window.clearInterval(intervalId);
+  }, [recordingStartedAt, recordingStatus]);
 
   useLayoutEffect(() => {
     if (status !== 'ready' || messages.length === 0) {
@@ -1356,7 +1519,12 @@ function Conversation({ chat, client, session, onChatActivity }) {
 
     const trimmedDraft = draft.trim();
 
-    if ((!trimmedDraft && selectedFiles.length === 0) || sendStatus === 'loading' || !chat.canWrite) {
+    if (
+      (!trimmedDraft && selectedFiles.length === 0) ||
+      sendStatus === 'loading' ||
+      recordingStatus === 'recording' ||
+      !chat.canWrite
+    ) {
       return;
     }
 
@@ -1432,6 +1600,186 @@ function Conversation({ chat, client, session, onChatActivity }) {
     }
 
     setSelectedFiles((current) => [...current, ...files]);
+  };
+
+  const sendVoiceFile = async (file) => {
+    if (!file || !chat.canWrite) {
+      return;
+    }
+
+    setSendStatus('loading');
+    setError('');
+
+    try {
+      const sentMessage = await client.sendFiles({
+        topic: chat.topic,
+        files: [file],
+        text: draft.trim(),
+        replyTo,
+      });
+      const localSentMessage = {
+        ...sentMessage,
+        from: session.user || sentMessage.from,
+      };
+
+      setMessages((current) => {
+        if (current.some((message) => isSameMessage(message, localSentMessage))) {
+          return current;
+        }
+
+        return [...current, localSentMessage];
+      });
+      onChatActivity?.(localSentMessage);
+      setDraft('');
+      setReplyTo(null);
+      setSendStatus('idle');
+    } catch (requestError) {
+      setError(requestError.message || 'Не удалось отправить голосовое сообщение.');
+      setSendStatus('idle');
+    }
+  };
+
+  const startVoiceRecording = async () => {
+    if (!chat.canWrite || sendStatus === 'loading' || recordingStatus === 'recording' || editingMessage) {
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      setError('Браузер не поддерживает запись голосовых сообщений.');
+      return;
+    }
+
+    setError('');
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = getAudioRecorderMimeType();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+
+      if (AudioContextClass) {
+        const audioContext = new AudioContextClass();
+        const analyser = audioContext.createAnalyser();
+        const source = audioContext.createMediaStreamSource(stream);
+
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.42;
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        source.connect(analyser);
+        audioContext.resume?.();
+        audioContextRef.current = audioContext;
+
+        const updateVoiceLevels = () => {
+          analyser.getByteFrequencyData(data);
+
+          setVoiceLevels((current) => {
+            const groups = current.length;
+            const usableBins = Math.max(groups, Math.floor(data.length * 0.45));
+            const binsPerGroup = Math.max(1, Math.floor(usableBins / groups));
+            const multipliers = [0.75, 1.18, 0.88, 1.35, 0.96, 1.22, 0.82];
+
+            return current.map((previous, index) => {
+              const start = index * binsPerGroup;
+              const end = Math.min(usableBins, start + binsPerGroup);
+              let sum = 0;
+
+              for (let bin = start; bin < end; bin += 1) {
+                sum += data[bin] || 0;
+              }
+
+              const average = sum / Math.max(1, end - start);
+              const rawLevel = Math.min(1, Math.pow(average / 92, 0.72) * multipliers[index % multipliers.length]);
+              const activeLevel = Math.max(0.06, rawLevel);
+
+              return previous * 0.35 + activeLevel * 0.65;
+            });
+          });
+          analyserFrameRef.current = window.requestAnimationFrame(updateVoiceLevels);
+        };
+
+        updateVoiceLevels();
+      }
+
+      recordingChunksRef.current = [];
+      recordingStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      recordingShouldSendRef.current = true;
+
+      recorder.addEventListener('dataavailable', (event) => {
+        if (event.data.size > 0) {
+          recordingChunksRef.current.push(event.data);
+        }
+      });
+
+      recorder.addEventListener('stop', () => {
+        const chunks = recordingChunksRef.current;
+        const currentMimeType = recorder.mimeType || mimeType || 'audio/webm';
+        const shouldSend = recordingShouldSendRef.current;
+
+        stream.getTracks().forEach((track) => track.stop());
+        stopVoiceAnalyser();
+        recordingStreamRef.current = null;
+        mediaRecorderRef.current = null;
+        recordingChunksRef.current = [];
+        recordingShouldSendRef.current = false;
+
+        if (chunks.length > 0 && shouldSend) {
+          const extension = getAudioFileExtension(currentMimeType);
+          const blob = new Blob(chunks, { type: currentMimeType });
+          const file = new File([blob], `voice-message-${Date.now()}.${extension}`, {
+            type: currentMimeType,
+            lastModified: Date.now(),
+          });
+
+          sendVoiceFile(file);
+        }
+
+        setRecordingStatus('idle');
+        setRecordingStartedAt(null);
+        setRecordingElapsedSeconds(0);
+      });
+
+      recorder.start();
+      setRecordingStartedAt(Date.now());
+      setRecordingElapsedSeconds(0);
+      setRecordingStatus('recording');
+    } catch (requestError) {
+      setRecordingStatus('idle');
+      setRecordingStartedAt(null);
+      setRecordingElapsedSeconds(0);
+      recordingShouldSendRef.current = false;
+      recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+      recordingStreamRef.current = null;
+      setError(
+        requestError.name === 'NotAllowedError'
+          ? 'Доступ к микрофону запрещен браузером.'
+          : requestError.message || 'Не удалось начать запись голосового сообщения.',
+      );
+    }
+  };
+
+  const stopVoiceRecording = () => {
+    if (mediaRecorderRef.current?.state === 'recording') {
+      recordingShouldSendRef.current = true;
+      mediaRecorderRef.current.stop();
+    }
+  };
+
+  const cancelVoiceRecording = () => {
+    recordingShouldSendRef.current = false;
+
+    if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.stop();
+      return;
+    }
+
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    recordingStreamRef.current = null;
+    recordingChunksRef.current = [];
+    stopVoiceAnalyser();
+    setRecordingStatus('idle');
+    setRecordingStartedAt(null);
+    setRecordingElapsedSeconds(0);
   };
 
   const removeSelectedFile = (indexToRemove) => {
@@ -1673,13 +2021,14 @@ function Conversation({ chat, client, session, onChatActivity }) {
         {selectedFiles.length > 0 && (
           <div className="composer-files" aria-label="Прикрепленные файлы">
             {selectedFiles.map((file, index) => (
-              <div className="composer-file-preview" key={getSelectedFileId(file, index)}>
+              <div className={`composer-file-preview ${file.type.startsWith('audio/') ? 'voice-preview' : ''}`} key={getSelectedFileId(file, index)}>
                 <span className="composer-file-icon" aria-hidden="true">
-                  {getFileBadge(file.name)}
+                  {file.type.startsWith('audio/') ? 'MIC' : getFileBadge(file.name)}
                 </span>
                 <span className="composer-file-meta">
-                  <strong>{file.name}</strong>
+                  <strong>{file.type.startsWith('audio/') ? 'Голосовое сообщение' : file.name}</strong>
                   <span>{[file.type || 'Файл', formatFileSize(file.size)].filter(Boolean).join(' · ')}</span>
+                  {file.type.startsWith('audio/') && <ComposerAudioPreview file={file} />}
                 </span>
                 <button type="button" onClick={() => removeSelectedFile(index)} aria-label={`Убрать ${file.name}`}>
                   x
@@ -1689,39 +2038,74 @@ function Conversation({ chat, client, session, onChatActivity }) {
           </div>
         )}
 
-        <div className="composer-row">
-          <button
-            className="attach-button"
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={sendStatus === 'loading' || !chat.canWrite || Boolean(editingMessage)}
-            aria-label="Прикрепить файл"
-            title="Прикрепить файл"
-          >
-            <img className="attach-icon" src={attachIconSrc} alt="" aria-hidden="true" />
-          </button>
-          <input ref={fileInputRef} className="file-input" type="file" multiple onChange={selectFiles} />
-          <textarea
-            value={draft}
-            placeholder="Написать сообщение"
-            rows={1}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                event.currentTarget.form?.requestSubmit();
-              }
-            }}
-          />
-          <button
-            className="send-button"
-            type="submit"
-            disabled={(!draft.trim() && selectedFiles.length === 0) || sendStatus === 'loading' || !chat.canWrite}
-          >
-            <span className="composer-icon send-icon" aria-hidden="true" />
-            <span className="sr-only">{sendStatus === 'loading' ? 'Отправляем' : 'Отправить'}</span>
-          </button>
-        </div>
+        {recordingStatus === 'recording' ? (
+          <div className="voice-recording-row" role="status">
+            <span className="voice-recording-spacer" aria-hidden="true" />
+            <button
+              className="voice-button recording"
+              type="button"
+              onClick={stopVoiceRecording}
+              aria-label="Остановить и отправить запись"
+              title="Остановить и отправить запись"
+            >
+              <span className="voice-stop-icon" aria-hidden="true" />
+            </button>
+            <button className="voice-cancel-button" type="button" onClick={cancelVoiceRecording}>
+              Не отправлять
+            </button>
+            <strong>{formatRecordingTime(recordingElapsedSeconds)}</strong>
+            <div className="voice-activity" aria-hidden="true">
+              {voiceLevels.map((level, index) => (
+                <span key={index} style={{ '--voice-level': level }} />
+              ))}
+            </div>
+            <span>Идет запись</span>
+          </div>
+        ) : (
+          <div className="composer-row">
+            <button
+              className="attach-button"
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={sendStatus === 'loading' || !chat.canWrite || Boolean(editingMessage)}
+              aria-label="Прикрепить файл"
+              title="Прикрепить файл"
+            >
+              <img className="attach-icon" src={attachIconSrc} alt="" aria-hidden="true" />
+            </button>
+            <button
+              className="voice-button"
+              type="button"
+              onClick={startVoiceRecording}
+              disabled={sendStatus === 'loading' || !chat.canWrite || Boolean(editingMessage)}
+              aria-label="Записать голосовое сообщение"
+              title="Записать голосовое сообщение"
+            >
+              <span className="voice-icon" aria-hidden="true" />
+            </button>
+            <input ref={fileInputRef} className="file-input" type="file" multiple onChange={selectFiles} />
+            <textarea
+              value={draft}
+              placeholder="Написать сообщение"
+              rows={1}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  event.currentTarget.form?.requestSubmit();
+                }
+              }}
+            />
+            <button
+              className="send-button"
+              type="submit"
+              disabled={(!draft.trim() && selectedFiles.length === 0) || sendStatus === 'loading' || !chat.canWrite}
+            >
+              <span className="composer-icon send-icon" aria-hidden="true" />
+              <span className="sr-only">{sendStatus === 'loading' ? 'Отправляем' : 'Отправить'}</span>
+            </button>
+          </div>
+        )}
       </form>
     </section>
   );

@@ -578,9 +578,15 @@ function getMessagePreview(message) {
   if (message.attachments?.length) {
     const firstAttachment = message.attachments[0];
 
-    return firstAttachment.type === 'image'
-      ? 'Изображение'
-      : firstAttachment.name || 'Файл';
+    if (firstAttachment.type === 'image') {
+      return 'Изображение';
+    }
+
+    if (firstAttachment.type === 'audio') {
+      return 'Голосовое сообщение';
+    }
+
+    return firstAttachment.name || 'Файл';
   }
 
   return 'Сообщение';
@@ -611,9 +617,9 @@ function normalizeAttachments(content, token = '') {
 
       return {
         id: `${entity.tp || 'attachment'}-${data.ref || data.name || index}`,
-        type: mime.startsWith('image/') ? 'image' : 'file',
+        type: mime.startsWith('image/') ? 'image' : mime.startsWith('audio/') ? 'audio' : 'file',
         mime,
-        name: data.name || (mime.startsWith('image/') ? 'Изображение' : 'Файл'),
+        name: data.name || (mime.startsWith('image/') ? 'Изображение' : mime.startsWith('audio/') ? 'Голосовое сообщение' : 'Файл'),
         size: Number(data.size || 0),
         width: Number(data.width || 0),
         height: Number(data.height || 0),

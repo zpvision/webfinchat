@@ -887,6 +887,27 @@ html[data-theme="dark"] .message-bubble.message-highlight {
   }
 }
 
+@keyframes voice-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(226, 78, 91, 0.35);
+  }
+
+  50% {
+    box-shadow: 0 0 0 6px rgba(226, 78, 91, 0);
+  }
+}
+
+@keyframes voice-activity-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+
+  to {
+    transform: translateX(100%);
+  }
+}
+
 .file-attachment {
   display: grid;
   grid-template-columns: 38px minmax(0, 1fr);
@@ -1402,13 +1423,27 @@ html[data-theme="dark"] .composer-file-preview {
   background: rgba(107, 93, 211, 0.1);
 }
 
+.composer-file-preview.voice-preview .composer-file-icon {
+  background: linear-gradient(135deg, #2b9f8f, #3d6fd6);
+}
+
+.composer-file-preview.voice-preview {
+  align-items: start;
+}
+
+.composer-audio-preview {
+  width: min(100%, 360px);
+  height: 32px;
+  margin-top: 4px;
+}
+
 html[data-theme="dark"] .composer-file-preview button:hover {
   background: rgba(255, 255, 255, 0.06);
 }
 
 .composer-row {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
+  grid-template-columns: 34px 34px minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
   border: 1px solid rgba(107, 93, 211, 0.15);
@@ -1438,6 +1473,147 @@ html[data-theme="dark"] .composer-file-preview button:hover {
   background: rgba(107, 93, 211, 0.1);
 }
 
+.voice-button {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  color: var(--fc-primary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.voice-button:hover:not(:disabled) {
+  background: rgba(107, 93, 211, 0.1);
+}
+
+.voice-button.recording {
+  color: #ffffff;
+  background: var(--fc-danger);
+}
+
+.voice-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.voice-icon {
+  position: relative;
+  width: 18px;
+  height: 18px;
+}
+
+.voice-icon::before {
+  position: absolute;
+  left: 6px;
+  top: 1px;
+  width: 6px;
+  height: 11px;
+  border: 2px solid currentColor;
+  border-radius: 999px;
+  content: "";
+}
+
+.voice-icon::after {
+  position: absolute;
+  left: 3px;
+  top: 8px;
+  width: 12px;
+  height: 8px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  border-left: 2px solid currentColor;
+  border-radius: 0 0 999px 999px;
+  content: "";
+}
+
+.voice-stop-icon {
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  background: currentColor;
+}
+
+.voice-recording-row {
+  display: grid;
+  grid-template-columns: 34px 34px auto auto minmax(220px, 0.7fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid rgba(226, 78, 91, 0.22);
+  border-radius: 22px;
+  padding: 4px 12px 4px 8px;
+  color: var(--fc-danger);
+  background: rgba(226, 78, 91, 0.06);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.voice-recording-spacer {
+  width: 34px;
+  height: 34px;
+}
+
+.voice-cancel-button {
+  border: 0;
+  padding: 0;
+  color: var(--fc-danger);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+
+.voice-cancel-button:hover {
+  text-decoration: underline;
+}
+
+.voice-recording-row strong {
+  min-width: 42px;
+  color: var(--fc-text);
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+}
+
+.voice-activity {
+  position: relative;
+  width: min(70%, 430px);
+  min-width: 230px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0;
+  overflow: hidden;
+  border-radius: 999px;
+  padding: 0 14px;
+  background: linear-gradient(90deg, rgba(118, 56, 183, 0.1), rgba(171, 11, 182, 0.1));
+}
+
+.voice-activity::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.35) 50%, transparent 100%);
+  animation: voice-activity-sweep 1.4s linear infinite;
+  content: "";
+}
+
+.voice-activity span {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 1.5px;
+  width: 1.5px;
+  height: calc(5px + (var(--voice-level, 0.2) * 31px));
+  border-radius: 999px;
+  background: linear-gradient(180deg, #7638b7 0%, #ab0bb6 100%);
+  box-shadow: 0 0 calc(4px + (var(--voice-level, 0.2) * 12px)) rgba(171, 11, 182, 0.34);
+  opacity: calc(0.38 + (var(--voice-level, 0.2) * 0.62));
+  transform: scaleY(calc(0.42 + (var(--voice-level, 0.2) * 0.58)));
+  transition: height 0.1s linear, opacity 0.1s linear, transform 0.1s linear;
+}
+
 .attach-icon {
   width: 21px;
   height: 21px;
@@ -1447,6 +1623,62 @@ html[data-theme="dark"] .composer-file-preview button:hover {
 
 html[data-theme="dark"] .attach-icon {
   filter: invert(78%) sepia(18%) saturate(933%) hue-rotate(209deg) brightness(95%) contrast(94%);
+}
+
+.audio-attachment {
+  display: grid;
+  grid-template-columns: 34px minmax(180px, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.message-bubble:not(.mine) .audio-attachment {
+  background: rgba(107, 93, 211, 0.08);
+}
+
+html[data-theme="dark"] .message-bubble:not(.mine) .audio-attachment {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.audio-attachment-icon {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #2b9f8f, #3d6fd6);
+}
+
+.audio-attachment-icon::before {
+  position: absolute;
+  left: 12px;
+  top: 7px;
+  width: 6px;
+  height: 12px;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  content: "";
+}
+
+.audio-attachment-icon::after {
+  position: absolute;
+  left: 9px;
+  top: 15px;
+  width: 12px;
+  height: 7px;
+  border-right: 2px solid #ffffff;
+  border-bottom: 2px solid #ffffff;
+  border-left: 2px solid #ffffff;
+  border-radius: 0 0 999px 999px;
+  content: "";
+}
+
+.audio-attachment audio {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
 }
 
 .composer-icon {
@@ -1780,7 +2012,20 @@ html[data-theme="dark"] .pdf-modal-stage {
   }
 
   .composer-row {
-    grid-template-columns: 34px minmax(0, 1fr) 34px;
+    grid-template-columns: 34px 34px minmax(0, 1fr) 34px;
+  }
+
+  .voice-recording-row {
+    grid-template-columns: 34px 34px auto minmax(120px, 1fr);
+  }
+
+  .voice-recording-row > span:last-child {
+    display: none;
+  }
+
+  .voice-activity {
+    width: 100%;
+    min-width: 120px;
   }
 
   .send-button {
