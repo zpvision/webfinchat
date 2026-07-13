@@ -538,7 +538,7 @@ function getMessageText(content) {
       .filter((format) => {
         const entity = content.ent[format.key];
 
-        return entity?.tp === 'IM' || entity?.tp === 'EX';
+        return entity?.tp === 'IM' || entity?.tp === 'EX' || entity?.tp === 'AU';
       })
       .map((format) => ({
         at: Number(format.at),
@@ -721,6 +721,22 @@ export function normalizeMessage(packet, token = '') {
     ...message,
     preview: getMessagePreview(message),
   };
+}
+
+function getAttachmentEntityType(uploadedFile, forceAudio = false) {
+  if (forceAudio || uploadedFile.mime.startsWith('audio/')) {
+    return 'AU';
+  }
+
+  return uploadedFile.mime.startsWith('image/') ? 'IM' : 'EX';
+}
+
+function normalizeAudioMime(mime) {
+  if (!mime?.startsWith('audio/')) {
+    return mime || 'application/octet-stream';
+  }
+
+  return mime.split(';')[0] || 'audio/ogg';
 }
 
 export class FinchatRealtimeClient {
@@ -1032,7 +1048,7 @@ export class FinchatRealtimeClient {
     };
   }
 
-  async sendFiles({ topic, files, text = '', replyTo }) {
+  async sendFiles({ topic, files, text = '', replyTo, kind = 'file' }) {
     await this.ensureAttached(topic);
 
     const selectedFiles = Array.from(files || []);
@@ -1042,24 +1058,33 @@ export class FinchatRealtimeClient {
       throw new Error('Р’С‹Р±РµСЂРёС‚Рµ С„Р°Р№Р»С‹ РґР»СЏ РѕС‚РїСЂР°РІРєРё.');
     }
 
+    const isVoiceMessage = kind === 'voice';
     const uploadedFiles = [];
 
     for (const file of selectedFiles) {
-      uploadedFiles.push(
-        await uploadAttachmentFile({
-          token: this.token,
-          file,
-        }),
-      );
+      const uploadedFile = await uploadAttachmentFile({
+        token: this.token,
+        file,
+      });
+
+      if (isVoiceMessage || uploadedFile.mime.startsWith('audio/')) {
+        uploadedFile.mime = normalizeAudioMime(uploadedFile.mime);
+      }
+
+      if (isVoiceMessage && Number(file.durationMs) > 0) {
+        uploadedFile.duration = Math.round(Number(file.durationMs));
+      }
+
+      uploadedFiles.push(uploadedFile);
     }
 
     const attachmentMarkers = uploadedFiles.map(() => ' ').join('');
-    const contentText = `${trimmedText}${attachmentMarkers}`;
+    const contentText = `${trimmedText}${attachmentMarkers}` || ' ';
     const attachmentOffset = trimmedText.length;
     const content = {
       ent: uploadedFiles.map((uploadedFile) => ({
         data: uploadedFile,
-        tp: uploadedFile.mime.startsWith('image/') ? 'IM' : 'EX',
+        tp: getAttachmentEntityType(uploadedFile, isVoiceMessage),
       })),
       fmt: uploadedFiles.map((_, index) => ({
         at: attachmentOffset + index,

@@ -968,9 +968,12 @@ function Conversation({ chat, client, session, onChatActivity }) {
   const [replyPreviews, setReplyPreviews] = useState({});
   const messageAreaRef = useRef(null);
   const messageEndRef = useRef(null);
+  const messagesRef = useRef([]);
   const fileInputRef = useRef(null);
   const preserveScrollRef = useRef(false);
   const stickToBottomRef = useRef(true);
+  const hasOlderMessagesRef = useRef(false);
+  const olderLoadingRef = useRef(false);
   const firstPaintRef = useRef(true);
   const initialBottomLockRef = useRef(false);
   const bottomLockTimerRef = useRef(null);
@@ -980,6 +983,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
   const recordingStreamRef = useRef(null);
   const recordingChunksRef = useRef([]);
   const recordingShouldSendRef = useRef(false);
+  const recordingStartedAtRef = useRef(null);
   const audioContextRef = useRef(null);
   const analyserFrameRef = useRef(null);
   const resolvedReplySeqsRef = useRef(new Set());
@@ -999,6 +1003,14 @@ function Conversation({ chat, client, session, onChatActivity }) {
   useEffect(() => {
     currentTopicRef.current = chat?.topic || '';
   }, [chat?.topic]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    hasOlderMessagesRef.current = hasOlderMessages;
+  }, [hasOlderMessages]);
 
   useEffect(() => {
     let active = true;
@@ -1021,7 +1033,10 @@ function Conversation({ chat, client, session, onChatActivity }) {
       setRecordingElapsedSeconds(0);
       setVoiceLevels(Array.from({ length: 44 }, () => 0.2));
       recordingShouldSendRef.current = false;
+      recordingStartedAtRef.current = null;
       setHasOlderMessages(false);
+      hasOlderMessagesRef.current = false;
+      olderLoadingRef.current = false;
       setOlderStatus('idle');
       setHighlightedSeq(null);
       setReplyPreviews({});
@@ -1043,7 +1058,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
         }
 
         setMessages(items);
-        setHasOlderMessages(items.length === INITIAL_MESSAGE_PAGE_SIZE);
+        setHasOlderMessages(items.length > 0 && Math.min(...items.map((message) => Number(message.seq || Infinity))) > 1);
         if (items.length > 0) {
           onChatActivity?.(items[items.length - 1]);
         }
@@ -1332,14 +1347,17 @@ function Conversation({ chat, client, session, onChatActivity }) {
   };
 
   const loadOlderMessages = async () => {
-    if (olderStatus === 'loading' || !hasOlderMessages || messages.length === 0 || !chat?.topic) {
+    const currentMessages = messagesRef.current;
+
+    if (olderLoadingRef.current || !hasOlderMessagesRef.current || currentMessages.length === 0 || !chat?.topic) {
       return;
     }
 
-    const firstSeq = Math.min(...messages.map((message) => Number(message.seq || Infinity)));
+    const firstSeq = Math.min(...currentMessages.map((message) => Number(message.seq || Infinity)));
 
-    if (!Number.isFinite(firstSeq)) {
+    if (!Number.isFinite(firstSeq) || firstSeq <= 1) {
       setHasOlderMessages(false);
+      hasOlderMessagesRef.current = false;
       return;
     }
 
@@ -1347,6 +1365,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
     const previousScrollHeight = scrollContainer?.scrollHeight || 0;
     const previousScrollTop = scrollContainer?.scrollTop || 0;
 
+    olderLoadingRef.current = true;
     setOlderStatus('loading');
     setError('');
 
@@ -1370,12 +1389,27 @@ function Conversation({ chat, client, session, onChatActivity }) {
 
         return mergeMessageLists(uniqueOlderItems, current);
       });
-      setHasOlderMessages(olderItems.length === MESSAGE_PAGE_SIZE);
+      const nextMessages = mergeMessageLists(olderItems, currentMessages);
+      const nextFirstSeq = Math.min(...nextMessages.map((message) => Number(message.seq || Infinity)));
+      const stillHasOlder = olderItems.length > 0 && Number.isFinite(nextFirstSeq) && nextFirstSeq > 1 && nextFirstSeq < firstSeq;
+
+      setHasOlderMessages(stillHasOlder);
+      hasOlderMessagesRef.current = stillHasOlder;
       setOlderStatus('idle');
+      olderLoadingRef.current = false;
+
+      window.requestAnimationFrame(() => {
+        const currentScrollContainer = messageAreaRef.current;
+
+        if (currentScrollContainer && currentScrollContainer.scrollTop <= 160 && hasOlderMessagesRef.current) {
+          loadOlderMessages();
+        }
+      });
 
     } catch (requestError) {
       setError(requestError.message || 'Не удалось загрузить предыдущие сообщения.');
       setOlderStatus('idle');
+      olderLoadingRef.current = false;
     }
   };
 
@@ -1614,6 +1648,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
       const sentMessage = await client.sendFiles({
         topic: chat.topic,
         files: [file],
+        kind: 'voice',
         text: draft.trim(),
         replyTo,
       });
@@ -1726,9 +1761,17 @@ function Conversation({ chat, client, session, onChatActivity }) {
         if (chunks.length > 0 && shouldSend) {
           const extension = getAudioFileExtension(currentMimeType);
           const blob = new Blob(chunks, { type: currentMimeType });
-          const file = new File([blob], `voice-message-${Date.now()}.${extension}`, {
+          const durationMs = recordingStartedAtRef.current
+            ? Math.max(0, Date.now() - recordingStartedAtRef.current)
+            : Math.max(0, recordingElapsedSeconds * 1000);
+          const file = new File([blob], `voice.${extension}`, {
             type: currentMimeType,
             lastModified: Date.now(),
+          });
+
+          Object.defineProperty(file, 'durationMs', {
+            configurable: true,
+            value: durationMs,
           });
 
           sendVoiceFile(file);
@@ -1736,16 +1779,20 @@ function Conversation({ chat, client, session, onChatActivity }) {
 
         setRecordingStatus('idle');
         setRecordingStartedAt(null);
+        recordingStartedAtRef.current = null;
         setRecordingElapsedSeconds(0);
       });
 
       recorder.start();
-      setRecordingStartedAt(Date.now());
+      const startedAt = Date.now();
+      recordingStartedAtRef.current = startedAt;
+      setRecordingStartedAt(startedAt);
       setRecordingElapsedSeconds(0);
       setRecordingStatus('recording');
     } catch (requestError) {
       setRecordingStatus('idle');
       setRecordingStartedAt(null);
+      recordingStartedAtRef.current = null;
       setRecordingElapsedSeconds(0);
       recordingShouldSendRef.current = false;
       recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -1779,6 +1826,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
     stopVoiceAnalyser();
     setRecordingStatus('idle');
     setRecordingStartedAt(null);
+    recordingStartedAtRef.current = null;
     setRecordingElapsedSeconds(0);
   };
 
