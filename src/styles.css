@@ -114,6 +114,18 @@ html[data-theme="dark"] .composer {
   background: rgba(255, 255, 255, 0.04);
 }
 
+html[data-theme="dark"] .composer.drag-active,
+html[data-theme="dark"] .conversation-panel.drag-active .composer {
+  background: rgba(53, 59, 100, 0.64);
+  outline-color: rgba(171, 11, 182, 0.82);
+}
+
+html[data-theme="dark"] .composer.drag-active::after,
+html[data-theme="dark"] .conversation-panel.drag-active .composer::after {
+  border-color: rgba(190, 93, 208, 0.75);
+  background: rgba(53, 59, 100, 0.24);
+}
+
 html[data-theme="dark"] .field input,
 html[data-theme="dark"] .search-box input,
 html[data-theme="dark"] .composer-row {
@@ -651,6 +663,7 @@ html[data-theme="dark"] .composer-row {
 }
 
 .conversation-panel {
+  position: relative;
   min-width: 0;
   min-height: 0;
   display: grid;
@@ -710,6 +723,13 @@ html[data-theme="dark"] .composer-row {
   overflow: auto;
   overscroll-behavior: contain;
   overflow-anchor: none;
+  transition: opacity 0.16s ease, filter 0.16s ease;
+}
+
+.conversation-panel.drag-active .conversation-header,
+.conversation-panel.drag-active .message-area {
+  opacity: 0.34;
+  filter: grayscale(0.28);
 }
 
 .message-list {
@@ -1262,12 +1282,36 @@ html[data-theme="dark"] .message-bubble:not(.mine) .reply-preview-clickable:hove
 }
 
 .composer {
+  position: relative;
   display: grid;
   gap: 8px;
   border-top: 0.5px solid var(--fc-line);
   padding: 12px 18px 16px;
   background: rgba(255, 255, 255, 0.55);
   backdrop-filter: blur(20px);
+}
+
+.composer.drag-active,
+.conversation-panel.drag-active .composer {
+  outline: 2px dashed rgba(118, 56, 183, 0.72);
+  outline-offset: -10px;
+  background: rgba(118, 56, 183, 0.08);
+}
+
+.composer.drag-active::after,
+.conversation-panel.drag-active .composer::after {
+  position: absolute;
+  inset: 8px;
+  border: 2px dashed rgba(171, 11, 182, 0.55);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.34);
+  pointer-events: none;
+  content: "";
+}
+
+.composer > * {
+  position: relative;
+  z-index: 1;
 }
 
 .composer-reply {

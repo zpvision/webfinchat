@@ -69,7 +69,10 @@ export async function fetchAttachmentBlob({ token, ref }) {
   });
 
   if (!response.ok) {
-    throw new Error(`Не удалось скачать файл: ${response.status}.`);
+    const error = new Error(`Не удалось скачать файл: ${response.status}.`);
+
+    error.status = response.status;
+    throw error;
   }
 
   const contentType = response.headers.get('content-type') || '';
@@ -130,7 +133,10 @@ export async function createPdfViewUrl({ token, ref, name }) {
   const responseText = await response.text();
 
   if (!response.ok) {
-    throw new Error(responseText || `Не удалось открыть PDF: ${response.status}.`);
+    const error = new Error(responseText || `Не удалось открыть PDF: ${response.status}.`);
+
+    error.status = response.status;
+    throw error;
   }
 
   let payload;
@@ -226,7 +232,7 @@ async function uploadAttachmentFileDirect({ token, file }) {
   const presignPacket = await presignResponse.json();
 
   if (presignPacket?.ctrl?.code !== 200) {
-    throw new Error(presignPacket.ctrl.text || `API вернул код ${presignPacket.ctrl.code}.`);
+    throw createApiError(presignPacket.ctrl);
   }
 
   const params = presignPacket?.ctrl?.params;
@@ -296,7 +302,10 @@ export async function uploadAttachmentFile({ token, file }) {
 
   if (!uploadResponse.ok) {
     const errorText = await uploadResponse.text();
-    throw new Error(errorText || `Не удалось загрузить файл: ${uploadResponse.status}.`);
+    const error = new Error(errorText || `Не удалось загрузить файл: ${uploadResponse.status}.`);
+
+    error.status = uploadResponse.status;
+    throw error;
   }
 
   const uploaded = await uploadResponse.json();
@@ -396,7 +405,7 @@ function collectPacketsUntilCtrl(socket, requestId, timeoutMs = 15000) {
         cleanup();
 
         if (packet.ctrl.code >= 300) {
-          reject(new Error(packet.ctrl.text || `API вернул код ${packet.ctrl.code}.`));
+          reject(createApiError(packet.ctrl));
           return;
         }
 
@@ -423,6 +432,27 @@ function collectPacketsUntilCtrl(socket, requestId, timeoutMs = 15000) {
   });
 }
 
+function createApiError(ctrl) {
+  const error = new Error(ctrl?.text || `API вернул код ${ctrl?.code}.`);
+
+  error.apiCode = Number(ctrl?.code || 0);
+  error.apiText = ctrl?.text || '';
+
+  return error;
+}
+
+export function isAuthenticationError(error) {
+  const code = Number(error?.apiCode || error?.status || 0);
+  const text = String(error?.apiText || error?.message || '').toLowerCase();
+
+  return (
+    code === 401 ||
+    (code === 403 && /(auth|token|credential|login|unauthori[sz]ed|forbidden)/i.test(text)) ||
+    /(invalid|expired|malformed|unknown|missing).{0,24}(token|credential|auth)/i.test(text) ||
+    /(token|credential|auth).{0,24}(invalid|expired|malformed|unknown|missing)/i.test(text)
+  );
+}
+
 function assertOk(response, expectedCode) {
   const ctrl = response?.ctrl;
 
@@ -431,7 +461,7 @@ function assertOk(response, expectedCode) {
   }
 
   if (ctrl.code !== expectedCode) {
-    throw new Error(ctrl.text || `API вернул код ${ctrl.code}.`);
+    throw createApiError(ctrl);
   }
 
   return ctrl;
@@ -839,7 +869,7 @@ export class FinchatRealtimeClient {
           return packet.ctrl;
         }
 
-        throw new Error(packet.ctrl.text || `API вернул код ${packet.ctrl.code}.`);
+        throw createApiError(packet.ctrl);
       }
 
       this.subscribedTopics.add(topic);
@@ -898,7 +928,7 @@ export class FinchatRealtimeClient {
           this.subscribedTopics.delete(topic);
         }
 
-        throw new Error(packet.ctrl.text || `API вернул код ${packet.ctrl.code}.`);
+        throw createApiError(packet.ctrl);
       }
 
       return packet;
@@ -943,7 +973,7 @@ export class FinchatRealtimeClient {
     );
 
     if (packet.ctrl?.code >= 300) {
-      throw new Error(packet.ctrl.text || `API вернул код ${packet.ctrl.code}.`);
+      throw createApiError(packet.ctrl);
     }
 
     return (packet.meta?.sub || [])
@@ -1206,7 +1236,7 @@ export class FinchatRealtimeClient {
     const packet = await waitForPacket(this.socket, (messagePacket) => messagePacket.ctrl?.id === id, 15000);
 
     if (packet.ctrl.code >= 300) {
-      throw new Error(packet.ctrl.text || `API РІРµСЂРЅСѓР» РєРѕРґ ${packet.ctrl.code}.`);
+      throw createApiError(packet.ctrl);
     }
 
     return packet.ctrl;
@@ -1277,7 +1307,7 @@ export async function loadChatList(token) {
     );
 
     if (attachPacket.ctrl && attachPacket.ctrl.code >= 300) {
-      throw new Error(attachPacket.ctrl.text || `API вернул код ${attachPacket.ctrl.code}.`);
+      throw createApiError(attachPacket.ctrl);
     }
 
     socket.send(
@@ -1302,7 +1332,7 @@ export async function loadChatList(token) {
     );
 
     if (packet.ctrl && packet.ctrl.code >= 300) {
-      throw new Error(packet.ctrl.text || `API вернул код ${packet.ctrl.code}.`);
+      throw createApiError(packet.ctrl);
     }
 
     const subscriptions = packet.meta?.sub || [];
@@ -1346,7 +1376,7 @@ export async function loadTopicMessages(token, topic, { limit = 30, beforeSeq, s
     const attachPacket = await waitForPacket(socket, (message) => message.ctrl?.id === 'topic-sub');
 
     if (attachPacket.ctrl.code >= 300) {
-      throw new Error(attachPacket.ctrl.text || `API вернул код ${attachPacket.ctrl.code}.`);
+      throw createApiError(attachPacket.ctrl);
     }
 
     const data = {
@@ -1434,7 +1464,7 @@ export async function sendTopicMessage({ token, topic, text, replyTo }) {
     const attachPacket = await waitForPacket(socket, (message) => message.ctrl?.id === 'send-sub');
 
     if (attachPacket.ctrl.code >= 300) {
-      throw new Error(attachPacket.ctrl.text || `API вернул код ${attachPacket.ctrl.code}.`);
+      throw createApiError(attachPacket.ctrl);
     }
 
     const head = createReplyHead(replyTo);
@@ -1456,7 +1486,7 @@ export async function sendTopicMessage({ token, topic, text, replyTo }) {
     const packet = await waitForPacket(socket, (message) => message.ctrl?.id === 'send-pub', 15000);
 
     if (packet.ctrl.code >= 300) {
-      throw new Error(packet.ctrl.text || `API вернул код ${packet.ctrl.code}.`);
+      throw createApiError(packet.ctrl);
     }
 
     const message = {

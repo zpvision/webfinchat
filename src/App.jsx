@@ -7,6 +7,7 @@ import {
   fetchAttachmentBlob,
   getDeletedRanges,
   hasApiKey,
+  isAuthenticationError,
   loadChatList,
   loadTopicMessageBySeq,
   loadTopicMessages,
@@ -24,30 +25,51 @@ const initialForm = {
 };
 const SESSION_STORAGE_KEY = 'finchatSession';
 const TOKEN_STORAGE_KEY = 'finchatToken';
+const AUTH_CHANNEL_NAME = 'finchat-auth';
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const INITIAL_MESSAGE_PAGE_SIZE = 10;
 const MESSAGE_PAGE_SIZE = 30;
 const MAX_QUOTED_MESSAGE_LOOKUP_PAGES = 20;
+
+function getSessionExpiresAt(session) {
+  return Number(session?.expiresAt || 0);
+}
+
+function isSessionValid(session) {
+  return Boolean(session?.token && getSessionExpiresAt(session) > Date.now());
+}
+
+function normalizeSession(session) {
+  if (!session?.token) {
+    return null;
+  }
+
+  return {
+    ...session,
+    expiresAt: getSessionExpiresAt(session) || Date.now() + SESSION_TTL_MS,
+  };
+}
 
 function loadStoredSession() {
   try {
     const rawSession = sessionStorage.getItem(SESSION_STORAGE_KEY);
 
     if (rawSession) {
-      const storedSession = JSON.parse(rawSession);
+      const storedSession = normalizeSession(JSON.parse(rawSession));
 
-      if (storedSession?.token) {
+      if (isSessionValid(storedSession)) {
         return storedSession;
       }
     }
 
-    const token =
-      sessionStorage.getItem(TOKEN_STORAGE_KEY) ||
-      localStorage.getItem(TOKEN_STORAGE_KEY);
+    const token = sessionStorage.getItem(TOKEN_STORAGE_KEY);
 
     localStorage.removeItem(SESSION_STORAGE_KEY);
     localStorage.removeItem(TOKEN_STORAGE_KEY);
 
-    return token ? { token } : null;
+    const migratedSession = normalizeSession(token ? { token } : null);
+
+    return isSessionValid(migratedSession) ? migratedSession : null;
   } catch {
     sessionStorage.removeItem(SESSION_STORAGE_KEY);
     sessionStorage.removeItem(TOKEN_STORAGE_KEY);
@@ -56,10 +78,19 @@ function loadStoredSession() {
 }
 
 function saveStoredSession(session) {
-  sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
-  sessionStorage.setItem(TOKEN_STORAGE_KEY, session.token);
+  const normalizedSession = normalizeSession(session);
+
+  if (!isSessionValid(normalizedSession)) {
+    clearStoredSession();
+    return null;
+  }
+
+  sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(normalizedSession));
+  sessionStorage.setItem(TOKEN_STORAGE_KEY, normalizedSession.token);
   localStorage.removeItem(SESSION_STORAGE_KEY);
   localStorage.removeItem(TOKEN_STORAGE_KEY);
+
+  return normalizedSession;
 }
 
 function clearStoredSession() {
@@ -947,7 +978,7 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-function Conversation({ chat, client, session, onChatActivity }) {
+function Conversation({ chat, client, session, onChatActivity, onSessionExpired }) {
   const [messages, setMessages] = useState([]);
   const [status, setStatus] = useState('idle');
   const [messagesVisible, setMessagesVisible] = useState(false);
@@ -957,6 +988,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
   const [editingMessage, setEditingMessage] = useState(null);
   const [messageMenu, setMessageMenu] = useState(null);
   const [selectedFiles, setSelectedFiles] = useState([]);
+  const [dragActive, setDragActive] = useState(false);
   const [sendStatus, setSendStatus] = useState('idle');
   const [recordingStatus, setRecordingStatus] = useState('idle');
   const [recordingStartedAt, setRecordingStartedAt] = useState(null);
@@ -970,6 +1002,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
   const messageEndRef = useRef(null);
   const messagesRef = useRef([]);
   const fileInputRef = useRef(null);
+  const dragDepthRef = useRef(0);
   const preserveScrollRef = useRef(false);
   const stickToBottomRef = useRef(true);
   const hasOlderMessagesRef = useRef(false);
@@ -1000,6 +1033,15 @@ function Conversation({ chat, client, session, onChatActivity }) {
     setVoiceLevels(Array.from({ length: 44 }, () => 0.2));
   };
 
+  const handleRequestError = (requestError, fallbackMessage) => {
+    if (isAuthenticationError(requestError)) {
+      onSessionExpired?.();
+      return 'Сессия истекла. Войдите снова.';
+    }
+
+    return requestError.message || fallbackMessage;
+  };
+
   useEffect(() => {
     currentTopicRef.current = chat?.topic || '';
   }, [chat?.topic]);
@@ -1028,6 +1070,8 @@ function Conversation({ chat, client, session, onChatActivity }) {
       setEditingMessage(null);
       setMessageMenu(null);
       setSelectedFiles([]);
+      setDragActive(false);
+      dragDepthRef.current = 0;
       setRecordingStatus('idle');
       setRecordingStartedAt(null);
       setRecordingElapsedSeconds(0);
@@ -1068,7 +1112,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
           return;
         }
 
-        setError(requestError.message || 'Не удалось загрузить историю сообщений.');
+        setError(handleRequestError(requestError, 'Не удалось загрузить историю сообщений.'));
         setStatus('error');
       }
     }
@@ -1224,6 +1268,20 @@ function Conversation({ chat, client, session, onChatActivity }) {
         });
     });
   }, [messages, replyPreviews, status, chat?.topic, session.token]);
+
+  useEffect(() => {
+    const resetDrag = () => resetFileDragState();
+
+    window.addEventListener('drop', resetDrag);
+    window.addEventListener('dragend', resetDrag);
+    window.addEventListener('blur', resetDrag);
+
+    return () => {
+      window.removeEventListener('drop', resetDrag);
+      window.removeEventListener('dragend', resetDrag);
+      window.removeEventListener('blur', resetDrag);
+    };
+  }, []);
 
   useEffect(() => () => {
     if (highlightTimerRef.current) {
@@ -1407,7 +1465,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
       });
 
     } catch (requestError) {
-      setError(requestError.message || 'Не удалось загрузить предыдущие сообщения.');
+      setError(handleRequestError(requestError, 'Не удалось загрузить предыдущие сообщения.'));
       setOlderStatus('idle');
       olderLoadingRef.current = false;
     }
@@ -1506,7 +1564,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
         setError('Цитируемое сообщение не найдено в ближайшей истории чата.');
       }
     } catch (requestError) {
-      setError(requestError.message || 'Не удалось загрузить цитируемое сообщение.');
+      setError(handleRequestError(requestError, 'Не удалось загрузить цитируемое сообщение.'));
     } finally {
       setOlderStatus('idle');
     }
@@ -1619,7 +1677,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
       setSelectedFiles([]);
       setSendStatus('idle');
     } catch (requestError) {
-      setError(requestError.message || 'Не удалось отправить сообщение.');
+      setError(handleRequestError(requestError, 'Не удалось отправить сообщение.'));
       setSendStatus('idle');
     }
   };
@@ -1634,6 +1692,74 @@ function Conversation({ chat, client, session, onChatActivity }) {
     }
 
     setSelectedFiles((current) => [...current, ...files]);
+  };
+
+  const canAttachFiles = chat.canWrite && !editingMessage && recordingStatus !== 'recording' && sendStatus !== 'loading';
+
+  const resetFileDragState = () => {
+    dragDepthRef.current = 0;
+    setDragActive(false);
+  };
+
+  const getDraggedFiles = (event) =>
+    Array.from(event.dataTransfer?.files || []).filter((file) => file instanceof File);
+
+  const hasDraggedFiles = (event) =>
+    Array.from(event.dataTransfer?.types || []).includes('Files') || getDraggedFiles(event).length > 0;
+
+  const handleConversationDragEnter = (event) => {
+    if (!canAttachFiles || !hasDraggedFiles(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setDragActive(true);
+  };
+
+  const handleConversationDragOver = (event) => {
+    if (!canAttachFiles || !hasDraggedFiles(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    setDragActive(true);
+  };
+
+  const handleConversationDragLeave = (event) => {
+    if (!canAttachFiles || !hasDraggedFiles(event)) {
+      return;
+    }
+
+    event.preventDefault();
+
+    if (!event.currentTarget.contains(event.relatedTarget)) {
+      resetFileDragState();
+      return;
+    }
+
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+
+    if (dragDepthRef.current === 0) {
+      setDragActive(false);
+    }
+  };
+
+  const handleConversationDrop = (event) => {
+    if (!canAttachFiles || !hasDraggedFiles(event)) {
+      resetFileDragState();
+      return;
+    }
+
+    event.preventDefault();
+    resetFileDragState();
+
+    const files = getDraggedFiles(event);
+
+    if (files.length > 0) {
+      setSelectedFiles((current) => [...current, ...files]);
+    }
   };
 
   const sendVoiceFile = async (file) => {
@@ -1669,7 +1795,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
       setReplyTo(null);
       setSendStatus('idle');
     } catch (requestError) {
-      setError(requestError.message || 'Не удалось отправить голосовое сообщение.');
+      setError(handleRequestError(requestError, 'Не удалось отправить голосовое сообщение.'));
       setSendStatus('idle');
     }
   };
@@ -1906,13 +2032,20 @@ function Conversation({ chat, client, session, onChatActivity }) {
       setMessages((current) => current.filter((item) => item.id !== message.id && item.seq !== message.seq));
       setSendStatus('idle');
     } catch (requestError) {
-      setError(requestError.message || 'Не удалось удалить сообщение.');
+      setError(handleRequestError(requestError, 'Не удалось удалить сообщение.'));
       setSendStatus('idle');
     }
   };
 
   return (
-    <section className="conversation-panel" aria-label="Текущий чат">
+    <section
+      className={`conversation-panel ${dragActive ? 'drag-active' : ''}`}
+      aria-label="Текущий чат"
+      onDragEnter={handleConversationDragEnter}
+      onDragLeave={handleConversationDragLeave}
+      onDragOver={handleConversationDragOver}
+      onDrop={handleConversationDrop}
+    >
       <header className="conversation-header">
         <span className="avatar large" aria-hidden="true">
           {getInitials(chat.title)}
@@ -2159,7 +2292,7 @@ function Conversation({ chat, client, session, onChatActivity }) {
   );
 }
 
-function MessengerScreen({ session, onLogout, theme, onToggleTheme }) {
+function MessengerScreen({ session, onLogout, onSessionExpired, theme, onToggleTheme }) {
   const [chats, setChats] = useState([]);
   const [selectedId, setSelectedId] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -2207,7 +2340,12 @@ function MessengerScreen({ session, onLogout, theme, onToggleTheme }) {
           return;
         }
 
-        setError(requestError.message || 'Не удалось загрузить список чатов.');
+        if (isAuthenticationError(requestError)) {
+          onSessionExpired?.();
+          setError('Сессия истекла. Войдите снова.');
+        } else {
+          setError(requestError.message || 'Не удалось загрузить список чатов.');
+        }
         setStatus('error');
       }
     }
@@ -2388,7 +2526,13 @@ function MessengerScreen({ session, onLogout, theme, onToggleTheme }) {
       </aside>
 
       {selectedChat ? (
-        <Conversation chat={selectedChat} client={client} session={session} onChatActivity={updateChatActivity} />
+        <Conversation
+          chat={selectedChat}
+          client={client}
+          session={session}
+          onChatActivity={updateChatActivity}
+          onSessionExpired={onSessionExpired}
+        />
       ) : (
         <section className="conversation-panel" aria-label="Текущий чат">
           <div className="conversation-empty">
@@ -2403,27 +2547,187 @@ function MessengerScreen({ session, onLogout, theme, onToggleTheme }) {
 
 export default function App() {
   const [session, setSession] = useState(loadStoredSession);
+  const [authReady, setAuthReady] = useState(() => Boolean(loadStoredSession()));
   const [theme, setTheme] = useState(() => localStorage.getItem('finchatTheme') || 'light');
+  const sessionRef = useRef(session);
+  const authChannelRef = useRef(null);
+  const tabIdRef = useRef(
+    typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random()}`,
+  );
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem('finchatTheme', theme);
   }, [theme]);
 
-  const handleLogin = (nextSession) => {
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
+  const publishAuthMessage = (message) => {
+    authChannelRef.current?.postMessage({
+      ...message,
+      source: tabIdRef.current,
+    });
+  };
+
+  const applySession = (nextSession, { broadcast = true } = {}) => {
     if (!nextSession?.token) {
       clearStoredSession();
+      sessionRef.current = null;
       setSession(null);
+      setAuthReady(true);
       return;
     }
 
-    saveStoredSession(nextSession);
-    setSession(nextSession);
+    const normalizedSession = saveStoredSession(nextSession);
+
+    if (!normalizedSession) {
+      sessionRef.current = null;
+      setSession(null);
+      setAuthReady(true);
+      return;
+    }
+
+    sessionRef.current = normalizedSession;
+    setSession(normalizedSession);
+    setAuthReady(true);
+
+    if (broadcast) {
+      publishAuthMessage({
+        type: 'session-response',
+        session: normalizedSession,
+      });
+    }
   };
 
-  const handleLogout = () => {
+  const handleLogin = (nextSession) => {
+    applySession({
+      ...nextSession,
+      expiresAt: Date.now() + SESSION_TTL_MS,
+    });
+  };
+
+  const handleLogout = ({ broadcast = true } = {}) => {
     clearStoredSession();
+    sessionRef.current = null;
     setSession(null);
+    setAuthReady(true);
+
+    if (broadcast) {
+      publishAuthMessage({ type: 'logout' });
+    }
+  };
+
+  const handleSessionExpired = () => {
+    handleLogout();
+  };
+
+  useEffect(() => {
+    if (!window.BroadcastChannel) {
+      setAuthReady(true);
+      return undefined;
+    }
+
+    const channel = new BroadcastChannel(AUTH_CHANNEL_NAME);
+    authChannelRef.current = channel;
+
+    channel.onmessage = (event) => {
+      const message = event.data || {};
+
+      if (message.source === tabIdRef.current) {
+        return;
+      }
+
+      if (message.type === 'session-request') {
+        const currentSession = sessionRef.current;
+
+        if (isSessionValid(currentSession)) {
+          channel.postMessage({
+            type: 'session-response',
+            source: tabIdRef.current,
+            target: message.source,
+            session: currentSession,
+          });
+        }
+        return;
+      }
+
+      if (message.type === 'session-response' && (!message.target || message.target === tabIdRef.current)) {
+        if (!sessionRef.current && isSessionValid(message.session)) {
+          applySession(message.session, { broadcast: false });
+        }
+        return;
+      }
+
+      if (message.type === 'logout') {
+        handleLogout({ broadcast: false });
+      }
+    };
+
+    if (!isSessionValid(sessionRef.current)) {
+      channel.postMessage({
+        type: 'session-request',
+        source: tabIdRef.current,
+      });
+
+      const timeoutId = window.setTimeout(() => {
+        setAuthReady(true);
+      }, 450);
+
+      return () => {
+        window.clearTimeout(timeoutId);
+        channel.close();
+        if (authChannelRef.current === channel) {
+          authChannelRef.current = null;
+        }
+      };
+    }
+
+    setAuthReady(true);
+
+    return () => {
+      channel.close();
+      if (authChannelRef.current === channel) {
+        authChannelRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!session?.token) {
+      return undefined;
+    }
+
+    const expiresIn = getSessionExpiresAt(session) - Date.now();
+
+    if (expiresIn <= 0) {
+      handleSessionExpired();
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(handleSessionExpired, Math.min(expiresIn, 2147483647));
+
+    return () => window.clearTimeout(timeoutId);
+  }, [session?.token, session?.expiresAt]);
+
+  if (!authReady) {
+    return (
+      <main className="page auth-page">
+        <section className="auth-shell">
+          <div className="auth-copy auth-visual">
+            <div className="auth-logo-mark">
+              <img src={logoSrc} alt="" />
+            </div>
+            <p className="eyebrow">FinChat</p>
+            <h1>Подключение</h1>
+            <p>Проверяем активную сессию.</p>
+          </div>
+        </section>
+      </main>
+    );
   };
 
   if (session?.token) {
@@ -2431,6 +2735,7 @@ export default function App() {
       <MessengerScreen
         session={session}
         onLogout={handleLogout}
+        onSessionExpired={handleSessionExpired}
         theme={theme}
         onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
       />
