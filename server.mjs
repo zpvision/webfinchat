@@ -103,6 +103,7 @@ function setSecurityHeaders(response) {
     `wss://${FINCHAT_HOST}`,
     'https://mc.yandex.ru',
     'https://mc.yandex.com',
+    'wss://mc.yandex.com',
   ].join(' ');
 
   response.setHeader('X-Content-Type-Options', 'nosniff');
