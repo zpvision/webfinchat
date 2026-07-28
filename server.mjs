@@ -101,6 +101,8 @@ function setSecurityHeaders(response) {
     "'self'",
     `https://${FINCHAT_HOST}`,
     `wss://${FINCHAT_HOST}`,
+    'https://mc.yandex.ru',
+    'https://mc.yandex.com',
   ].join(' ');
 
   response.setHeader('X-Content-Type-Options', 'nosniff');
@@ -120,9 +122,9 @@ function setSecurityHeaders(response) {
       "form-action 'self'",
       "frame-ancestors 'none'",
       "frame-src 'self' blob:",
-      "img-src 'self' blob: data:",
+      "img-src 'self' blob: data: https://mc.yandex.ru https://mc.yandex.com",
       "object-src 'none'",
-      "script-src 'self'",
+      "script-src 'self' https://mc.yandex.ru",
       "style-src 'self'",
       'upgrade-insecure-requests',
     ].join('; '),

@@ -26,7 +26,8 @@ const initialForm = {
 const SESSION_STORAGE_KEY = 'finchatSession';
 const TOKEN_STORAGE_KEY = 'finchatToken';
 const AUTH_CHANNEL_NAME = 'finchat-auth';
-const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const SESSION_TOUCH_THROTTLE_MS = 60 * 1000;
 const INITIAL_MESSAGE_PAGE_SIZE = 10;
 const MESSAGE_PAGE_SIZE = 30;
 const MAX_QUOTED_MESSAGE_LOOKUP_PAGES = 20;
@@ -39,55 +40,76 @@ function isSessionValid(session) {
   return Boolean(session?.token && getSessionExpiresAt(session) > Date.now());
 }
 
-function normalizeSession(session) {
+function normalizeSession(session, { refresh = false } = {}) {
   if (!session?.token) {
     return null;
   }
 
   return {
     ...session,
-    expiresAt: getSessionExpiresAt(session) || Date.now() + SESSION_TTL_MS,
+    expiresAt: refresh ? Date.now() + SESSION_TTL_MS : getSessionExpiresAt(session) || Date.now() + SESSION_TTL_MS,
   };
 }
 
 function loadStoredSession() {
   try {
-    const rawSession = sessionStorage.getItem(SESSION_STORAGE_KEY);
+    const rawSession =
+      localStorage.getItem(SESSION_STORAGE_KEY) ||
+      sessionStorage.getItem(SESSION_STORAGE_KEY);
 
     if (rawSession) {
       const storedSession = normalizeSession(JSON.parse(rawSession));
 
       if (isSessionValid(storedSession)) {
-        return storedSession;
+        const refreshedSession = normalizeSession(storedSession, { refresh: true });
+
+        localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(refreshedSession));
+        sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(refreshedSession));
+        sessionStorage.setItem(TOKEN_STORAGE_KEY, refreshedSession.token);
+
+        return refreshedSession;
       }
+
+      clearStoredSession();
+      return null;
     }
 
-    const token = sessionStorage.getItem(TOKEN_STORAGE_KEY);
+    const token =
+      sessionStorage.getItem(TOKEN_STORAGE_KEY) ||
+      localStorage.getItem(TOKEN_STORAGE_KEY);
 
-    localStorage.removeItem(SESSION_STORAGE_KEY);
-    localStorage.removeItem(TOKEN_STORAGE_KEY);
+    const migratedSession = normalizeSession(token ? { token } : null, { refresh: true });
 
-    const migratedSession = normalizeSession(token ? { token } : null);
+    if (isSessionValid(migratedSession)) {
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(migratedSession));
+      sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(migratedSession));
+      sessionStorage.setItem(TOKEN_STORAGE_KEY, migratedSession.token);
 
-    return isSessionValid(migratedSession) ? migratedSession : null;
+      return migratedSession;
+    }
+
+    clearStoredSession();
+    return null;
   } catch {
     sessionStorage.removeItem(SESSION_STORAGE_KEY);
     sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    localStorage.removeItem(SESSION_STORAGE_KEY);
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
     return null;
   }
 }
 
-function saveStoredSession(session) {
-  const normalizedSession = normalizeSession(session);
+function saveStoredSession(session, { refresh = false } = {}) {
+  const normalizedSession = normalizeSession(session, { refresh });
 
   if (!isSessionValid(normalizedSession)) {
     clearStoredSession();
     return null;
   }
 
+  localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(normalizedSession));
   sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(normalizedSession));
   sessionStorage.setItem(TOKEN_STORAGE_KEY, normalizedSession.token);
-  localStorage.removeItem(SESSION_STORAGE_KEY);
   localStorage.removeItem(TOKEN_STORAGE_KEY);
 
   return normalizedSession;
@@ -502,6 +524,11 @@ function AttachmentImage({ attachment, token, onOpen, onLoad }) {
       setObjectUrl('');
 
       try {
+        if (!attachment.ref && attachment.url) {
+          setObjectUrl(attachment.url);
+          return;
+        }
+
         const blob = await fetchAttachmentBlob({ token, ref: attachment.ref });
 
         if (!active) {
@@ -526,7 +553,7 @@ function AttachmentImage({ attachment, token, onOpen, onLoad }) {
         URL.revokeObjectURL(nextObjectUrl);
       }
     };
-  }, [attachment.ref, token]);
+  }, [attachment.ref, attachment.url, token]);
 
   if (error) {
     return <span className="attachment-error">{error}</span>;
@@ -572,6 +599,11 @@ function AttachmentAudio({ attachment, token }) {
       setObjectUrl('');
 
       try {
+        if (!attachment.ref && attachment.url) {
+          setObjectUrl(attachment.url);
+          return;
+        }
+
         const blob = await fetchAttachmentBlob({ token, ref: attachment.ref });
 
         if (!active) {
@@ -596,7 +628,7 @@ function AttachmentAudio({ attachment, token }) {
         URL.revokeObjectURL(nextObjectUrl);
       }
     };
-  }, [attachment.ref, token]);
+  }, [attachment.ref, attachment.url, token]);
 
   if (error) {
     return <span className="attachment-error">{error}</span>;
@@ -646,6 +678,16 @@ function isPdfAttachment(attachment) {
   return attachment?.mime === 'application/pdf' || /\.pdf$/i.test(attachment?.name || '');
 }
 
+function downloadAttachmentUrl(url, name) {
+  const link = document.createElement('a');
+
+  link.href = url;
+  link.download = name || 'download';
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
 function PdfViewer({ file, token, onClose }) {
   const [viewUrl, setViewUrl] = useState('');
   const [error, setError] = useState('');
@@ -684,6 +726,11 @@ function PdfViewer({ file, token, onClose }) {
       setViewUrl('');
 
       try {
+        if (!file.ref && file.url) {
+          setViewUrl(file.url);
+          return;
+        }
+
         const nextViewUrl = await createPdfViewUrl({ token, ref: file.ref, name: file.name });
         const checkResponse = await fetch(nextViewUrl, { cache: 'no-store' });
 
@@ -732,7 +779,11 @@ function PdfViewer({ file, token, onClose }) {
             <button
               className="modal-download-button"
               type="button"
-              onClick={() => downloadAttachmentFile({ token, ref: file.ref, name: file.name })}
+              onClick={() =>
+                file.ref
+                  ? downloadAttachmentFile({ token, ref: file.ref, name: file.name })
+                  : downloadAttachmentUrl(file.url, file.name)
+              }
               title="Скачать"
             >
               Скачать
@@ -768,11 +819,17 @@ function MessageAttachments({ attachments, token, onMediaLoad }) {
     setDownloadError('');
 
     try {
-      await downloadAttachmentFile({
-        token,
-        ref: attachment.ref,
-        name: attachment.name,
-      });
+      if (attachment.ref) {
+        await downloadAttachmentFile({
+          token,
+          ref: attachment.ref,
+          name: attachment.name,
+        });
+      } else if (attachment.url) {
+        downloadAttachmentUrl(attachment.url, attachment.name);
+      } else {
+        throw new Error('У файла нет ссылки для скачивания.');
+      }
     } catch (error) {
       setDownloadError(error.message || 'Не удалось скачать файл.');
     } finally {
@@ -1470,6 +1527,30 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
       olderLoadingRef.current = false;
     }
   };
+
+  useEffect(() => {
+    if (status !== 'ready' || olderStatus !== 'idle' || !hasOlderMessages || messages.length === 0 || !chat?.topic) {
+      return undefined;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      const scrollContainer = messageAreaRef.current;
+
+      if (!scrollContainer || olderLoadingRef.current || !hasOlderMessagesRef.current) {
+        return;
+      }
+
+      const needsMoreHistory =
+        scrollContainer.scrollHeight <= scrollContainer.clientHeight + 160 ||
+        scrollContainer.scrollTop <= 80;
+
+      if (needsMoreHistory) {
+        loadOlderMessages();
+      }
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [messages.length, status, olderStatus, hasOlderMessages, chat?.topic]);
 
   const scrollToMessage = (seq) => {
     const targetSeq = Number(seq);
@@ -2551,6 +2632,7 @@ export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('finchatTheme') || 'light');
   const sessionRef = useRef(session);
   const authChannelRef = useRef(null);
+  const lastSessionTouchRef = useRef(0);
   const tabIdRef = useRef(
     typeof crypto !== 'undefined' && crypto.randomUUID
       ? crypto.randomUUID()
@@ -2621,7 +2703,48 @@ export default function App() {
     }
   };
 
+  const touchSession = ({ force = false } = {}) => {
+    const currentSession = sessionRef.current;
+
+    if (!currentSession?.token) {
+      return;
+    }
+
+    if (!isSessionValid(currentSession)) {
+      handleSessionExpired();
+      return;
+    }
+
+    const now = Date.now();
+
+    if (!force && now - lastSessionTouchRef.current < SESSION_TOUCH_THROTTLE_MS) {
+      return;
+    }
+
+    lastSessionTouchRef.current = now;
+    const refreshedSession = saveStoredSession(currentSession, { refresh: true });
+
+    if (!refreshedSession) {
+      handleSessionExpired();
+      return;
+    }
+
+    sessionRef.current = refreshedSession;
+    setSession(refreshedSession);
+    publishAuthMessage({
+      type: 'session-response',
+      session: refreshedSession,
+    });
+  };
+
   const handleSessionExpired = () => {
+    const storedSession = loadStoredSession();
+
+    if (isSessionValid(storedSession)) {
+      applySession(storedSession, { broadcast: false });
+      return;
+    }
+
     handleLogout();
   };
 
@@ -2695,6 +2818,36 @@ export default function App() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!session?.token) {
+      return undefined;
+    }
+
+    touchSession({ force: true });
+
+    const handleActivity = () => touchSession();
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        touchSession({ force: true });
+      }
+    };
+    const activityEvents = ['pointerdown', 'keydown', 'scroll', 'touchstart'];
+
+    activityEvents.forEach((eventName) => {
+      window.addEventListener(eventName, handleActivity, { capture: true, passive: true });
+    });
+    window.addEventListener('focus', handleActivity);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      activityEvents.forEach((eventName) => {
+        window.removeEventListener(eventName, handleActivity, { capture: true });
+      });
+      window.removeEventListener('focus', handleActivity);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [session?.token]);
 
   useEffect(() => {
     if (!session?.token) {

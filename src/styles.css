@@ -66,6 +66,13 @@ body {
   white-space: nowrap;
 }
 
+.metrika-pixel {
+  position: absolute;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+}
+
 button,
 input,
 textarea {

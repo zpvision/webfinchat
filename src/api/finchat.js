@@ -161,7 +161,7 @@ export async function createPdfViewUrl({ token, ref, name }) {
 }
 
 function getFileExtension(name) {
-  const extension = name?.split('.').pop();
+  const extension = name?.split('.').pop()?.toLowerCase();
 
   if (!extension || extension === name) {
     return '';
@@ -170,8 +170,30 @@ function getFileExtension(name) {
   return extension;
 }
 
-async function getImageDimensions(file) {
-  if (!file.type.startsWith('image/')) {
+function getMimeFromFileName(name) {
+  const extension = getFileExtension(name);
+  const mimeByExtension = {
+    avif: 'image/avif',
+    gif: 'image/gif',
+    heic: 'image/heic',
+    heif: 'image/heif',
+    jfif: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    jpg: 'image/jpeg',
+    png: 'image/png',
+    svg: 'image/svg+xml',
+    webp: 'image/webp',
+  };
+
+  return mimeByExtension[extension] || '';
+}
+
+function getFileMime(file) {
+  return file.type || getMimeFromFileName(file.name) || 'application/octet-stream';
+}
+
+async function getImageDimensions(file, mime = getFileMime(file)) {
+  if (!mime.startsWith('image/')) {
     return {};
   }
 
@@ -207,7 +229,7 @@ async function uploadAttachmentFileDirect({ token, file }) {
   }
 
   const uploadUrl = new URL('/file-upload-proxy', window.location.origin);
-  const mime = file.type || 'application/octet-stream';
+  const mime = getFileMime(file);
   const extension = getFileExtension(file.name);
 
   uploadUrl.searchParams.set('direct', 'true');
@@ -270,11 +292,11 @@ async function uploadAttachmentFileDirect({ token, file }) {
   }
 
   return {
-    mime,
+    mime: params.content_type || mime,
     name: file.name,
     ref: params.url,
     size: file.size,
-    ...(await getImageDimensions(file)),
+    ...(await getImageDimensions(file, params.content_type || mime)),
   };
 }
 
@@ -287,7 +309,7 @@ export async function uploadAttachmentFile({ token, file }) {
     throw new Error('Файл не выбран.');
   }
 
-  const mime = file.type || 'application/octet-stream';
+  const mime = getFileMime(file);
   const extension = getFileExtension(file.name);
   const uploadResponse = await fetch('/file-upload-proxy', {
     method: 'POST',
@@ -315,11 +337,11 @@ export async function uploadAttachmentFile({ token, file }) {
   }
 
   return {
-    mime,
+    mime: uploaded.content_type || mime,
     name: file.name,
     ref: uploaded.url,
     size: file.size,
-    ...(await getImageDimensions(file)),
+    ...(await getImageDimensions(file, uploaded.content_type || mime)),
   };
 }
 
@@ -622,12 +644,16 @@ function getMessagePreview(message) {
   return 'Сообщение';
 }
 
+function getAttachmentRef(data) {
+  return data?.ref || data?.url || '';
+}
+
 function getAttachmentUrl(data, token = '') {
   if (data?.val && data?.mime) {
     return `data:${data.mime};base64,${data.val}`;
   }
 
-  return createFileUrl(data?.ref, { includeApiKey: true, token });
+  return createFileUrl(getAttachmentRef(data), { includeApiKey: true, token });
 }
 
 function normalizeAttachments(content, token = '') {
@@ -653,7 +679,7 @@ function normalizeAttachments(content, token = '') {
         size: Number(data.size || 0),
         width: Number(data.width || 0),
         height: Number(data.height || 0),
-        ref: data.ref || '',
+        ref: getAttachmentRef(data),
         url,
         raw: entity,
       };
