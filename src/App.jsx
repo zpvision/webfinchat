@@ -2324,6 +2324,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
             <span>Идет запись</span>
           </div>
         ) : (
+          <>
           <div className="composer-row">
             <button
               className="attach-button"
@@ -2352,7 +2353,27 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
               rows={1}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey) {
+                if (event.key !== 'Enter') {
+                  return;
+                }
+
+                if (event.ctrlKey || event.metaKey) {
+                  event.preventDefault();
+
+                  const target = event.currentTarget;
+                  const selectionStart = target.selectionStart;
+                  const selectionEnd = target.selectionEnd;
+                  const nextDraft = `${draft.slice(0, selectionStart)}\n${draft.slice(selectionEnd)}`;
+
+                  setDraft(nextDraft);
+                  window.requestAnimationFrame(() => {
+                    target.selectionStart = selectionStart + 1;
+                    target.selectionEnd = selectionStart + 1;
+                  });
+                  return;
+                }
+
+                if (!event.shiftKey && !event.altKey) {
                   event.preventDefault();
                   event.currentTarget.form?.requestSubmit();
                 }
@@ -2367,6 +2388,8 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
               <span className="sr-only">{sendStatus === 'loading' ? 'Отправляем' : 'Отправить'}</span>
             </button>
           </div>
+          <div className="composer-hint">Enter - отправить, Ctrl+Enter - новая строка</div>
+          </>
         )}
       </form>
     </section>
