@@ -522,7 +522,7 @@ function collectMetaSubPackets(socket, requestId, timeoutMs = 15000, idleMs = 45
           return;
         }
 
-        finish();
+        resetIdle();
         return;
       }
 
@@ -692,13 +692,22 @@ function getPublicTitle(publicData) {
 }
 
 function normalizeTopicMember(subscription) {
-  const user = subscription.user || subscription.topic || '';
+  if (subscription?.deleted) {
+    return null;
+  }
+
+  const user = subscription.user || (String(subscription.topic || '').startsWith('usr') ? subscription.topic : '');
+
+  if (!user) {
+    return null;
+  }
+
   const title =
     getPublicTitle(subscription.public) ||
     subscription.private?.comment ||
     subscription.private?.title ||
     user;
-  const access = subscription.acs?.mode || subscription.acs?.given || '';
+  const access = subscription.acs?.mode || subscription.acs?.given || subscription.acs?.want || '';
 
   return {
     id: user,
@@ -1852,6 +1861,60 @@ export async function loadTopicMessageBySeq(token, topic, seq) {
   });
 
   return messages.find((message) => Number(message.seq) === targetSeq) || null;
+}
+
+export async function loadTopicMembers(token, topic) {
+  if (!token) {
+    throw new Error('Нет токена авторизации для загрузки участников.');
+  }
+
+  if (!topic) {
+    return [];
+  }
+
+  const socket = await openAuthenticatedSocketWithToken(token);
+
+  try {
+    socket.send(
+      JSON.stringify({
+        sub: {
+          id: 'members-sub',
+          topic,
+        },
+      }),
+    );
+
+    const attachPacket = await waitForPacket(socket, (message) => message.ctrl?.id === 'members-sub', 15000);
+
+    if (attachPacket.ctrl.code >= 300 && !isAlreadySubscribed(attachPacket.ctrl)) {
+      throw createApiError(attachPacket.ctrl);
+    }
+
+    socket.send(
+      JSON.stringify({
+        get: {
+          id: 'members-get',
+          topic,
+          what: 'sub desc',
+          sub: {
+            limit: 500,
+          },
+        },
+      }),
+    );
+
+    const packets = await collectMetaSubPackets(socket, 'members-get', 15000, 700);
+
+    return packets
+      .flatMap((packet) => packet.meta?.sub || [])
+      .map(normalizeTopicMember)
+      .filter((member) => member.user)
+      .sort((left, right) => left.title.localeCompare(right.title, 'ru'));
+  } finally {
+    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+      socket.close();
+    }
+  }
 }
 
 export async function markTopicRead(token, topic, seq) {

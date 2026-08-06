@@ -10,6 +10,7 @@ import {
   hasApiKey,
   isAuthenticationError,
   loadChatList,
+  loadTopicMembers,
   markTopicRead,
   loadTopicMessageBySeq,
   loadTopicMessages,
@@ -271,11 +272,35 @@ function getMemberSubtitle(member) {
   return 'Участник';
 }
 
-function mergeMembers(currentMembers, nextMembers) {
-  const merged = [...currentMembers];
+function isVisibleParticipant(member, currentUser) {
+  if (!member?.user) {
+    return false;
+  }
 
-  nextMembers.filter(Boolean).forEach((member) => {
-    const existingIndex = merged.findIndex((item) => item.user === member.user || item.id === member.id);
+  if (member.user === currentUser) {
+    return true;
+  }
+
+  const access = String(member.access || '').toUpperCase();
+
+  return access !== 'N' && access !== 'NONE';
+}
+
+function getMemberKey(member) {
+  return member?.user || member?.id || '';
+}
+
+function mergeMembers(currentMembers, nextMembers) {
+  const merged = [];
+
+  [...currentMembers, ...nextMembers].filter(Boolean).forEach((member) => {
+    const memberKey = getMemberKey(member);
+
+    if (!memberKey) {
+      return;
+    }
+
+    const existingIndex = merged.findIndex((item) => getMemberKey(item) === memberKey);
 
     if (existingIndex >= 0) {
       const existingMember = merged[existingIndex];
@@ -292,6 +317,13 @@ function mergeMembers(currentMembers, nextMembers) {
   });
 
   return merged.sort((left, right) => left.title.localeCompare(right.title, 'ru'));
+}
+
+function enrichMember(member, knownUsers) {
+  const memberKey = getMemberKey(member);
+  const knownUser = knownUsers.find((item) => getMemberKey(item) === memberKey);
+
+  return mergeMembers([member], knownUser ? [knownUser] : [])[0] || member;
 }
 
 function getMessageReceiptStatus(message, members, currentUser) {
@@ -1155,6 +1187,8 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
   const [highlightedSeq, setHighlightedSeq] = useState(null);
   const [replyPreviews, setReplyPreviews] = useState({});
   const [groupMembers, setGroupMembers] = useState([]);
+  const [knownUsers, setKnownUsers] = useState([]);
+  const [receiptUsers, setReceiptUsers] = useState([]);
   const [membersStatus, setMembersStatus] = useState('idle');
   const [membersPanelOpen, setMembersPanelOpen] = useState(false);
   const messageAreaRef = useRef(null);
@@ -1182,6 +1216,15 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
   const loadingMemberIdsRef = useRef(new Set());
   const lastReadSeqRef = useRef(0);
   const currentTopicRef = useRef(chat?.topic || '');
+  const displayMembers = useMemo(() => mergeMembers(groupMembers, knownUsers), [groupMembers, knownUsers]);
+  const receiptMembers = useMemo(() => mergeMembers(groupMembers, receiptUsers), [groupMembers, receiptUsers]);
+  const participantMembers = useMemo(
+    () =>
+      groupMembers
+        .map((member) => enrichMember(member, knownUsers))
+        .filter((member) => isVisibleParticipant(member, session.user)),
+    [groupMembers, knownUsers, session.user],
+  );
 
   const stopVoiceAnalyser = () => {
     if (analyserFrameRef.current) {
@@ -1238,6 +1281,8 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
       setRecordingElapsedSeconds(0);
       setVoiceLevels(Array.from({ length: 44 }, () => 0.2));
       setGroupMembers([]);
+      setKnownUsers([]);
+      setReceiptUsers([]);
       setMembersStatus(chat.isGroup ? 'loading' : 'idle');
       setMembersPanelOpen(false);
       loadingMemberIdsRef.current = new Set();
@@ -1304,7 +1349,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
       setMembersStatus('loading');
 
       try {
-        const members = await client.loadMembers(chat.topic);
+        const members = await loadTopicMembers(session.token, chat.topic);
 
         if (!active) {
           return;
@@ -1332,14 +1377,16 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
     return () => {
       active = false;
     };
-  }, [chat?.topic, chat?.access, client, session.user]);
+  }, [chat?.topic, chat?.access, session.token, session.user]);
 
   useEffect(() => {
     if (!chat?.topic || status !== 'ready' || messages.length === 0) {
       return;
     }
 
-    const usersWithNames = new Set(groupMembers.filter(hasMemberDisplayName).map((member) => member.user).filter(Boolean));
+    const usersWithNames = new Set(
+      [...groupMembers, ...knownUsers].filter(hasMemberDisplayName).map((member) => member.user).filter(Boolean),
+    );
     const usersFromMembers = groupMembers.map((member) => member.user).filter(Boolean);
     const usersFromMessages = messages.map((message) => message.from);
     const missingUsers = Array.from(
@@ -1349,19 +1396,9 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
       ),
     );
 
-    const usersMissingFromPanel = usersFromMessages.filter(
-      (user) => user && !groupMembers.some((member) => member.user === user || member.id === user),
-    );
-
-    if (usersMissingFromPanel.length > 0) {
-      setGroupMembers((current) =>
-        mergeMembers(current, Array.from(new Set(usersMissingFromPanel)).map(createMemberPlaceholder)),
-      );
-    }
-
     missingUsers.slice(0, 12).forEach((user) => {
       loadingMemberIdsRef.current.add(user);
-      setGroupMembers((current) => mergeMembers(current, [createMemberPlaceholder(user)]));
+      setKnownUsers((current) => mergeMembers(current, [createMemberPlaceholder(user)]));
 
       const loadProfile = user === session.user ? client.loadOwnProfile(user) : client.loadUserProfile(user);
 
@@ -1371,7 +1408,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
             return;
           }
 
-          setGroupMembers((current) => mergeMembers(current, [member]));
+          setKnownUsers((current) => mergeMembers(current, [member]));
         })
         .catch((requestError) => {
           if (isAuthenticationError(requestError)) {
@@ -1382,7 +1419,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
           loadingMemberIdsRef.current.delete(user);
         });
     });
-  }, [chat?.topic, client, groupMembers, messages, session.user, status]);
+  }, [chat?.topic, client, groupMembers, knownUsers, messages, session.user, status]);
 
   useEffect(() => {
     if (!chat?.topic) {
@@ -1418,7 +1455,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
         receipt.from &&
         Number(receipt.seq) > 0
       ) {
-        setGroupMembers((current) =>
+        setReceiptUsers((current) =>
           mergeMembers(current, [
             {
               user: receipt.from,
@@ -1480,7 +1517,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
           return;
         }
 
-        setGroupMembers((current) =>
+        setReceiptUsers((current) =>
           mergeMembers(current, [
             {
               user: session.user,
@@ -2439,7 +2476,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
           <h2>{chat.title}</h2>
           <p>
             {chat.isGroup
-              ? `Группа${groupMembers.length ? `, ${groupMembers.length} участников` : ''}`
+              ? `Группа${participantMembers.length ? `, ${participantMembers.length} участников` : ''}`
               : 'Диалог'}
           </p>
         </button>
@@ -2455,13 +2492,13 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
           </div>
           {membersStatus === 'loading' && <div className="group-members-state">Загружаем...</div>}
           {membersStatus === 'error' && <div className="group-members-state">Не удалось загрузить участников</div>}
-          {membersStatus === 'ready' && groupMembers.length === 0 && (
+          {membersStatus === 'ready' && participantMembers.length === 0 && (
             <div className="group-members-state">Участники не найдены</div>
           )}
-          {groupMembers.length > 0 && (
+          {participantMembers.length > 0 && (
             <div className="group-members-list">
-              {groupMembers.map((member) => (
-                <div className="group-member-item" key={member.user}>
+              {participantMembers.map((member) => (
+                <div className="group-member-item" key={getMemberKey(member)}>
                   <span className={`avatar member-avatar ${getAvatarTone(member.user || member.title)}`} aria-hidden="true">
                     {getInitials(member.title)}
                   </span>
@@ -2505,8 +2542,8 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
             {messages.map((message, index) => {
               const mine = message.from === session.user;
               const showGroupAuthor = chat.isGroup && !mine;
-              const authorTitle = showGroupAuthor ? getMemberTitle(groupMembers, message.from) : '';
-              const receiptStatus = mine ? getMessageReceiptStatus(message, groupMembers, session.user) : '';
+              const authorTitle = showGroupAuthor ? getMemberTitle(displayMembers, message.from) : '';
+              const receiptStatus = mine ? getMessageReceiptStatus(message, receiptMembers, session.user) : '';
               const dateKey = getMessageDateKey(message.createdAt);
               const previousDateKey = getMessageDateKey(messages[index - 1]?.createdAt);
               const showDate = dateKey && dateKey !== previousDateKey;
