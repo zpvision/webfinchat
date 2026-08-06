@@ -560,8 +560,14 @@ function fileProxyPlugin(env) {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
+  const finchatHost = env.VITE_FINCHAT_HOST || env.FINCHAT_HOST || 'api.dev.finchat.club';
+  const finchatApiKey = env.VITE_FINCHAT_API_KEY || env.FINCHAT_API_KEY || '';
 
   return {
+    define: {
+      __FINCHAT_HOST__: JSON.stringify(finchatHost),
+      __FINCHAT_API_KEY__: JSON.stringify(finchatApiKey),
+    },
     plugins: [react(), fileProxyPlugin(env)],
   };
 });

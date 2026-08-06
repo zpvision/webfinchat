@@ -11,7 +11,32 @@ function encodeBase64(value) {
   return btoa(binary);
 }
 
+const PUBLIC_FINCHAT_HOST = typeof __FINCHAT_HOST__ === 'string' ? __FINCHAT_HOST__ : '';
+const PUBLIC_FINCHAT_API_KEY = typeof __FINCHAT_API_KEY__ === 'string' ? __FINCHAT_API_KEY__ : '';
+
+function normalizePublicHost(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^wss?:\/\//i, '')
+    .replace(/^https?:\/\//i, '')
+    .replace(/\/.*$/, '');
+}
+
 function createSocketUrl() {
+  const apiHost = normalizePublicHost(PUBLIC_FINCHAT_HOST);
+
+  if (apiHost) {
+    const socketUrl = new URL('/v0/channels', `https://${apiHost}`);
+
+    socketUrl.protocol = 'wss:';
+
+    if (PUBLIC_FINCHAT_API_KEY) {
+      socketUrl.searchParams.set('apikey', PUBLIC_FINCHAT_API_KEY);
+    }
+
+    return socketUrl.toString();
+  }
+
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 
   return `${protocol}//${window.location.host}/finchat-channels`;
@@ -454,6 +479,78 @@ function collectPacketsUntilCtrl(socket, requestId, timeoutMs = 15000) {
   });
 }
 
+function collectMetaSubPackets(socket, requestId, timeoutMs = 15000, idleMs = 450) {
+  return new Promise((resolve, reject) => {
+    const packets = [];
+    let idleTimeout = null;
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      if (packets.length > 0) {
+        resolve(packets);
+        return;
+      }
+      reject(new Error('API не ответил вовремя.'));
+    }, timeoutMs);
+
+    const finish = () => {
+      cleanup();
+      resolve(packets);
+    };
+
+    const resetIdle = () => {
+      if (idleTimeout) {
+        window.clearTimeout(idleTimeout);
+      }
+      idleTimeout = window.setTimeout(finish, idleMs);
+    };
+
+    const handleMessage = (event) => {
+      let packet;
+
+      try {
+        packet = JSON.parse(event.data);
+      } catch {
+        cleanup();
+        reject(new Error('API вернул ответ в неизвестном формате.'));
+        return;
+      }
+
+      if (packet.ctrl?.id === requestId) {
+        if (packet.ctrl.code >= 300) {
+          cleanup();
+          reject(createApiError(packet.ctrl));
+          return;
+        }
+
+        finish();
+        return;
+      }
+
+      if (packet.meta?.id === requestId && Array.isArray(packet.meta.sub)) {
+        packets.push(packet);
+        resetIdle();
+      }
+    };
+
+    const handleError = () => {
+      cleanup();
+      reject(new Error('Ошибка соединения с FinChat API.'));
+    };
+
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      if (idleTimeout) {
+        window.clearTimeout(idleTimeout);
+      }
+      socket.removeEventListener('message', handleMessage);
+      socket.removeEventListener('error', handleError);
+    };
+
+    socket.addEventListener('message', handleMessage);
+    socket.addEventListener('error', handleError);
+  });
+}
+
 function createApiError(ctrl) {
   const error = new Error(ctrl?.text || `API вернул код ${ctrl?.code}.`);
 
@@ -553,7 +650,7 @@ function normalizeChat(subscription) {
     topic;
   const seq = Number(subscription.seq || 0);
   const read = Number(subscription.read || 0);
-  const access = subscription.acs?.mode || '';
+  const access = subscription.acs?.mode || subscription.acs?.given || subscription.acs?.want || '';
 
   return {
     id: topic,
@@ -576,6 +673,65 @@ function normalizeChat(subscription) {
   };
 }
 
+function getPublicTitle(publicData) {
+  if (typeof publicData === 'string') {
+    return publicData;
+  }
+
+  if (!publicData || typeof publicData !== 'object') {
+    return '';
+  }
+
+  return (
+    publicData.fn ||
+    publicData.name ||
+    [publicData.first, publicData.last].filter(Boolean).join(' ') ||
+    publicData.title ||
+    ''
+  );
+}
+
+function normalizeTopicMember(subscription) {
+  const user = subscription.user || subscription.topic || '';
+  const title =
+    getPublicTitle(subscription.public) ||
+    subscription.private?.comment ||
+    subscription.private?.title ||
+    user;
+  const access = subscription.acs?.mode || subscription.acs?.given || '';
+
+  return {
+    id: user,
+    title,
+    user,
+    access,
+    online: Boolean(subscription.online),
+    read: Number(subscription.read || 0),
+    recv: Number(subscription.recv || 0),
+    seenAt: subscription.seen?.when || subscription.updated || '',
+    raw: subscription,
+  };
+}
+
+function normalizeUserProfile(user, desc = {}) {
+  const title = getPublicTitle(desc.public) || user;
+
+  return {
+    id: user,
+    title,
+    user,
+    access: '',
+    online: false,
+    read: 0,
+    recv: 0,
+    seenAt: desc.updated || '',
+    raw: {
+      desc,
+      user,
+    },
+  };
+}
+
 function getMessageText(content) {
   if (typeof content === 'string') {
     return content;
@@ -590,7 +746,7 @@ function getMessageText(content) {
       .filter((format) => {
         const entity = content.ent[format.key];
 
-        return entity?.tp === 'IM' || entity?.tp === 'EX' || entity?.tp === 'AU';
+        return format.tp === 'QQ' || entity?.tp === 'IM' || entity?.tp === 'EX' || entity?.tp === 'AU';
       })
       .map((format) => ({
         at: Number(format.at),
@@ -666,6 +822,11 @@ function normalizeAttachments(content, token = '') {
       const data = entity?.data || {};
       const mime = data.mime || '';
       const url = getAttachmentUrl(data, token);
+      const type = entity.tp === 'IM' || mime.startsWith('image/')
+        ? 'image'
+        : entity.tp === 'AU' || mime.startsWith('audio/')
+          ? 'audio'
+          : 'file';
 
       if (!url) {
         return null;
@@ -673,9 +834,9 @@ function normalizeAttachments(content, token = '') {
 
       return {
         id: `${entity.tp || 'attachment'}-${data.ref || data.name || index}`,
-        type: mime.startsWith('image/') ? 'image' : mime.startsWith('audio/') ? 'audio' : 'file',
+        type,
         mime,
-        name: data.name || (mime.startsWith('image/') ? 'Изображение' : mime.startsWith('audio/') ? 'Голосовое сообщение' : 'Файл'),
+        name: data.name || (type === 'image' ? 'Изображение' : type === 'audio' ? 'Голосовое сообщение' : 'Файл'),
         size: Number(data.size || 0),
         width: Number(data.width || 0),
         height: Number(data.height || 0),
@@ -726,12 +887,28 @@ export function getDeletedRanges(packet) {
   return (
     packet?.pres?.delseq ||
     packet?.pres?.del_seq ||
+    packet?.pres?.del?.delseq ||
+    packet?.pres?.del?.del_seq ||
     packet?.meta?.del?.delseq ||
     packet?.meta?.del?.del_seq ||
+    packet?.del?.delseq ||
+    packet?.del?.del_seq ||
     packet?.ctrl?.params?.delseq ||
     packet?.ctrl?.params?.del_seq ||
     []
   );
+}
+
+export function getPacketTopics(packet) {
+  return [
+    packet?.data?.topic,
+    packet?.pres?.topic,
+    packet?.pres?.src,
+    packet?.meta?.topic,
+    packet?.del?.topic,
+    packet?.ctrl?.topic,
+    packet?.ctrl?.params?.topic,
+  ].filter(Boolean);
 }
 
 function createReplyHead(replyTo) {
@@ -740,7 +917,7 @@ function createReplyHead(replyTo) {
   }
 
   return {
-    reply: Number(replyTo.seq),
+    reply: String(Number(replyTo.seq)),
   };
 }
 
@@ -753,6 +930,89 @@ function createLocalReply(replyTo) {
     seq: replyTo.seq,
     from: replyTo.from,
     text: replyTo.text || replyTo.preview || '',
+  };
+}
+
+function getDraftyTextLength(value) {
+  return Array.from(String(value || '')).length;
+}
+
+function createPlainDrafty(text) {
+  return {
+    txt: String(text || ''),
+  };
+}
+
+function truncateDraftyText(text, limit = 160) {
+  const chars = Array.from(String(text || '').replace(/\s+/g, ' ').trim());
+
+  if (chars.length <= limit) {
+    return chars.join('');
+  }
+
+  return `${chars.slice(0, Math.max(0, limit - 1)).join('')}…`;
+}
+
+function createReplyQuoteContent(replyTo) {
+  if (!replyTo?.seq) {
+    return null;
+  }
+
+  const author = replyTo.authorName || replyTo.senderName || '';
+  const body = truncateDraftyText(replyTo.text || replyTo.preview || 'Сообщение');
+  const header = author ? `${author}\n` : '';
+  const text = `${header}${body}`;
+  const quoteLength = getDraftyTextLength(text);
+  const fmt = [
+    {
+      at: 0,
+      len: quoteLength,
+      tp: 'QQ',
+    },
+  ];
+  const ent = [];
+
+  if (author && replyTo.from) {
+    ent.push({
+      tp: 'MN',
+      data: {
+        val: replyTo.from,
+      },
+    });
+    fmt.unshift({
+      at: 0,
+      len: getDraftyTextLength(author),
+      key: 0,
+    });
+  }
+
+  return {
+    txt: text,
+    fmt,
+    ent,
+  };
+}
+
+function prependReplyQuote(replyTo, content) {
+  const quote = createReplyQuoteContent(replyTo);
+
+  if (!quote) {
+    return content;
+  }
+
+  const base = typeof content === 'string' ? createPlainDrafty(content) : content || createPlainDrafty('');
+  const quoteLength = getDraftyTextLength(quote.txt);
+  const quoteEntityCount = quote.ent?.length || 0;
+  const shiftedFormat = (base.fmt || []).map((format) => ({
+    ...format,
+    at: typeof format.at === 'number' && format.at >= 0 ? format.at + quoteLength : format.at,
+    key: typeof format.key === 'number' ? format.key + quoteEntityCount : format.key,
+  }));
+
+  return {
+    txt: `${quote.txt}${base.txt || ''}`,
+    fmt: [...(quote.fmt || []), ...shiftedFormat],
+    ent: [...(quote.ent || []), ...(base.ent || [])],
   };
 }
 
@@ -793,6 +1053,12 @@ function normalizeAudioMime(mime) {
   }
 
   return mime.split(';')[0] || 'audio/ogg';
+}
+
+function normalizeVoiceMime(uploadedMime, fileMime) {
+  const preferredMime = fileMime?.startsWith('audio/') ? fileMime : uploadedMime;
+
+  return preferredMime?.startsWith('audio/') ? normalizeAudioMime(preferredMime) : 'audio/ogg';
 }
 
 export class FinchatRealtimeClient {
@@ -1029,6 +1295,135 @@ export class FinchatRealtimeClient {
     }
   }
 
+  async loadMembers(topic) {
+    await this.attach(topic);
+
+    const id = this.nextId('get-members');
+
+    this.socket.send(
+      JSON.stringify({
+        get: {
+          id,
+          topic,
+          what: 'sub',
+          sub: {
+            limit: 500,
+          },
+        },
+      }),
+    );
+
+    const packets = await collectMetaSubPackets(this.socket, id, 15000);
+
+    return packets
+      .flatMap((packet) => packet.meta?.sub || [])
+      .map(normalizeTopicMember)
+      .filter((member) => member.user)
+      .sort((left, right) => left.title.localeCompare(right.title, 'ru'));
+  }
+
+  async loadUserProfile(user) {
+    if (!user) {
+      return null;
+    }
+
+    await this.connect();
+
+    const id = this.nextId('get-user-desc');
+
+    this.socket.send(
+      JSON.stringify({
+        get: {
+          id,
+          topic: user,
+          what: 'desc',
+          desc: {},
+        },
+      }),
+    );
+
+    const packet = await waitForPacket(
+      this.socket,
+      (message) =>
+        message.meta?.id === id && message.meta.desc ||
+        message.ctrl?.id === id && message.ctrl.code >= 300,
+      15000,
+    );
+
+    if (packet.ctrl?.code >= 300) {
+      throw createApiError(packet.ctrl);
+    }
+
+    return normalizeUserProfile(user, packet.meta?.desc || {});
+  }
+
+  note(topic, what, seq, unread) {
+    const targetSeq = Number(seq);
+
+    if (!topic || !['read', 'recv'].includes(what) || !Number.isFinite(targetSeq) || targetSeq <= 0) {
+      return;
+    }
+
+    this.connect()
+      .then(() => {
+        const note = {
+          topic,
+          what,
+          seq: targetSeq,
+        };
+
+        if (Number.isFinite(Number(unread))) {
+          note.unread = Number(unread);
+        }
+
+        this.socket.send(
+          JSON.stringify({
+            note,
+          }),
+        );
+      })
+      .catch(() => {});
+  }
+
+  noteRead(topic, seq, unread = 0) {
+    this.note(topic, 'read', seq, unread);
+  }
+
+  async loadOwnProfile(user) {
+    if (!user) {
+      return null;
+    }
+
+    await this.connect();
+
+    const id = this.nextId('get-own-desc');
+
+    this.socket.send(
+      JSON.stringify({
+        get: {
+          id,
+          topic: 'me',
+          what: 'desc',
+          desc: {},
+        },
+      }),
+    );
+
+    const packet = await waitForPacket(
+      this.socket,
+      (message) =>
+        message.meta?.id === id && message.meta.desc ||
+        message.ctrl?.id === id && message.ctrl.code >= 300,
+      15000,
+    );
+
+    if (packet.ctrl?.code >= 300) {
+      throw createApiError(packet.ctrl);
+    }
+
+    return normalizeUserProfile(user, packet.meta?.desc || {});
+  }
+
   async getMessages(topic, { limit = 30, beforeSeq, sinceSeq } = {}) {
     const id = this.nextId('get-data');
     const data = {
@@ -1073,15 +1468,16 @@ export class FinchatRealtimeClient {
     }
 
     const head = createReplyHead(replyTo);
+    const content = prependReplyQuote(replyTo, {
+      txt: trimmedText,
+    });
 
     const packet = await this.publish(topic, {
       idPrefix: 'pub',
       payload: {
         noecho: true,
         head,
-        content: {
-          txt: trimmedText,
-        },
+        content,
       },
     });
 
@@ -1091,7 +1487,7 @@ export class FinchatRealtimeClient {
       seq: packet.ctrl.params?.seq,
       from: packet.ctrl.params?.user || '',
       text: trimmedText,
-      content: { txt: trimmedText },
+      content,
       head: head || {},
       reply: createLocalReply(replyTo),
       createdAt: packet.ctrl.ts || new Date().toISOString(),
@@ -1123,7 +1519,9 @@ export class FinchatRealtimeClient {
         file,
       });
 
-      if (isVoiceMessage || uploadedFile.mime.startsWith('audio/')) {
+      if (isVoiceMessage) {
+        uploadedFile.mime = normalizeVoiceMime(uploadedFile.mime, file.type);
+      } else if (uploadedFile.mime.startsWith('audio/')) {
         uploadedFile.mime = normalizeAudioMime(uploadedFile.mime);
       }
 
@@ -1137,7 +1535,7 @@ export class FinchatRealtimeClient {
     const attachmentMarkers = uploadedFiles.map(() => ' ').join('');
     const contentText = `${trimmedText}${attachmentMarkers}` || ' ';
     const attachmentOffset = trimmedText.length;
-    const content = {
+    const content = prependReplyQuote(replyTo, {
       ent: uploadedFiles.map((uploadedFile) => ({
         data: uploadedFile,
         tp: getAttachmentEntityType(uploadedFile, isVoiceMessage),
@@ -1148,7 +1546,7 @@ export class FinchatRealtimeClient {
         len: 1,
       })),
       txt: contentText,
-    };
+    });
     const head = createReplyHead(replyTo);
 
     const packet = await this.publish(topic, {
@@ -1494,6 +1892,9 @@ export async function sendTopicMessage({ token, topic, text, replyTo }) {
     }
 
     const head = createReplyHead(replyTo);
+    const content = prependReplyQuote(replyTo, {
+      txt: trimmedText,
+    });
 
     socket.send(
       JSON.stringify({
@@ -1502,9 +1903,7 @@ export async function sendTopicMessage({ token, topic, text, replyTo }) {
           topic,
           noecho: false,
           head,
-          content: {
-            txt: trimmedText,
-          },
+          content,
         },
       }),
     );
@@ -1521,7 +1920,7 @@ export async function sendTopicMessage({ token, topic, text, replyTo }) {
       seq: packet.ctrl.params?.seq,
       from: packet.ctrl.params?.user || '',
       text: trimmedText,
-      content: { txt: trimmedText },
+      content,
       head: head || {},
       reply: createLocalReply(replyTo),
       createdAt: packet.ctrl.ts || new Date().toISOString(),

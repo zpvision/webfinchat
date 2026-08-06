@@ -6,6 +6,7 @@ import {
   downloadAttachmentFile,
   fetchAttachmentBlob,
   getDeletedRanges,
+  getPacketTopics,
   hasApiKey,
   isAuthenticationError,
   loadChatList,
@@ -15,6 +16,7 @@ import {
   normalizeMessage,
 } from './api/finchat.js';
 import attachIconSrc from '../attach.svg';
+import readIconSrc from '../read.svg';
 import logoSrc from './assets/logo_512.png';
 
 const initialForm = {
@@ -225,6 +227,102 @@ function getAvatarTone(value) {
   }
 
   return `avatar-tone-${hash + 1}`;
+}
+
+function getMemberTitle(members, userId) {
+  if (!userId) {
+    return 'Участник';
+  }
+
+  const member = members.find((item) => item.user === userId || item.id === userId);
+
+  if (member?.title && member.title !== userId) {
+    return member.title;
+  }
+
+  return `Участник ${String(userId).slice(-4)}`;
+}
+
+function hasMemberDisplayName(member) {
+  return Boolean(member?.title && member.title !== member.user && !member.title.startsWith('usr'));
+}
+
+function createMemberPlaceholder(user, access = '') {
+  return {
+    id: user,
+    user,
+    title: user,
+    access,
+    read: 0,
+    recv: 0,
+  };
+}
+
+function getMemberSubtitle(member) {
+  if (member.online) {
+    return 'онлайн';
+  }
+
+  if (member.access) {
+    return member.access === 'JRWP' ? 'Участник' : 'Администратор';
+  }
+
+  return 'Участник';
+}
+
+function mergeMembers(currentMembers, nextMembers) {
+  const merged = [...currentMembers];
+
+  nextMembers.filter(Boolean).forEach((member) => {
+    const existingIndex = merged.findIndex((item) => item.user === member.user || item.id === member.id);
+
+    if (existingIndex >= 0) {
+      const existingMember = merged[existingIndex];
+      merged[existingIndex] = {
+        ...existingMember,
+        ...member,
+        title: hasMemberDisplayName(member) ? member.title : existingMember.title || member.title,
+        read: Math.max(Number(existingMember.read || 0), Number(member.read || 0)),
+        recv: Math.max(Number(existingMember.recv || 0), Number(member.recv || 0)),
+      };
+    } else {
+      merged.push(member);
+    }
+  });
+
+  return merged.sort((left, right) => left.title.localeCompare(right.title, 'ru'));
+}
+
+function getMessageReceiptStatus(message, members, currentUser) {
+  const seq = Number(message?.seq || 0);
+
+  if (!seq) {
+    return 'sent';
+  }
+
+  const otherMembers = members.filter((member) => member.user && member.user !== currentUser);
+
+  if (otherMembers.some((member) => Number(member.read || 0) >= seq)) {
+    return 'read';
+  }
+
+  if (otherMembers.some((member) => Number(member.recv || 0) >= seq)) {
+    return 'received';
+  }
+
+  return 'sent';
+}
+
+function getReceiptLabel(status) {
+  if (status === 'read') {
+    return 'Прочитано';
+  }
+
+  if (status === 'received') {
+    return 'Доставлено';
+  }
+
+  return 'Отправлено';
 }
 
 function formatFileSize(value) {
@@ -1055,6 +1153,9 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
   const [olderStatus, setOlderStatus] = useState('idle');
   const [highlightedSeq, setHighlightedSeq] = useState(null);
   const [replyPreviews, setReplyPreviews] = useState({});
+  const [groupMembers, setGroupMembers] = useState([]);
+  const [membersStatus, setMembersStatus] = useState('idle');
+  const [membersPanelOpen, setMembersPanelOpen] = useState(false);
   const messageAreaRef = useRef(null);
   const messageEndRef = useRef(null);
   const messagesRef = useRef([]);
@@ -1077,6 +1178,8 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
   const audioContextRef = useRef(null);
   const analyserFrameRef = useRef(null);
   const resolvedReplySeqsRef = useRef(new Set());
+  const loadingMemberIdsRef = useRef(new Set());
+  const lastReadSeqRef = useRef(0);
   const currentTopicRef = useRef(chat?.topic || '');
 
   const stopVoiceAnalyser = () => {
@@ -1133,6 +1236,11 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
       setRecordingStartedAt(null);
       setRecordingElapsedSeconds(0);
       setVoiceLevels(Array.from({ length: 44 }, () => 0.2));
+      setGroupMembers([]);
+      setMembersStatus(chat.isGroup ? 'loading' : 'idle');
+      setMembersPanelOpen(false);
+      loadingMemberIdsRef.current = new Set();
+      lastReadSeqRef.current = 0;
       recordingShouldSendRef.current = false;
       recordingStartedAtRef.current = null;
       setHasOlderMessages(false);
@@ -1182,15 +1290,108 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
   }, [chat?.topic, client]);
 
   useEffect(() => {
+    let active = true;
+
+    async function loadMembers() {
+      if (!chat?.topic) {
+        setGroupMembers([]);
+        setMembersStatus('idle');
+        setMembersPanelOpen(false);
+        return;
+      }
+
+      setMembersStatus('loading');
+
+      try {
+        const members = await client.loadMembers(chat.topic);
+
+        if (!active) {
+          return;
+        }
+
+        const ownMember = session.user ? [createMemberPlaceholder(session.user, chat.access)] : [];
+
+        setGroupMembers((current) => mergeMembers(current, [...members, ...ownMember]));
+        setMembersStatus('ready');
+      } catch (requestError) {
+        if (!active) {
+          return;
+        }
+
+        if (isAuthenticationError(requestError)) {
+          onSessionExpired?.();
+        }
+
+        setMembersStatus('error');
+      }
+    }
+
+    loadMembers();
+
+    return () => {
+      active = false;
+    };
+  }, [chat?.topic, chat?.access, client, session.user]);
+
+  useEffect(() => {
+    if (!chat?.topic || status !== 'ready' || messages.length === 0) {
+      return;
+    }
+
+    const usersWithNames = new Set(groupMembers.filter(hasMemberDisplayName).map((member) => member.user).filter(Boolean));
+    const usersFromMembers = groupMembers.map((member) => member.user).filter(Boolean);
+    const usersFromMessages = messages.map((message) => message.from);
+    const missingUsers = Array.from(
+      new Set(
+        [...usersFromMembers, ...usersFromMessages]
+          .filter((user) => user && !usersWithNames.has(user) && !loadingMemberIdsRef.current.has(user)),
+      ),
+    );
+
+    const usersMissingFromPanel = usersFromMessages.filter(
+      (user) => user && !groupMembers.some((member) => member.user === user || member.id === user),
+    );
+
+    if (usersMissingFromPanel.length > 0) {
+      setGroupMembers((current) =>
+        mergeMembers(current, Array.from(new Set(usersMissingFromPanel)).map(createMemberPlaceholder)),
+      );
+    }
+
+    missingUsers.slice(0, 12).forEach((user) => {
+      loadingMemberIdsRef.current.add(user);
+      setGroupMembers((current) => mergeMembers(current, [createMemberPlaceholder(user)]));
+
+      const loadProfile = user === session.user ? client.loadOwnProfile(user) : client.loadUserProfile(user);
+
+      loadProfile
+        .then((member) => {
+          if (currentTopicRef.current !== chat.topic) {
+            return;
+          }
+
+          setGroupMembers((current) => mergeMembers(current, [member]));
+        })
+        .catch((requestError) => {
+          if (isAuthenticationError(requestError)) {
+            onSessionExpired?.();
+          }
+        })
+        .finally(() => {
+          loadingMemberIdsRef.current.delete(user);
+        });
+    });
+  }, [chat?.topic, client, groupMembers, messages, session.user, status]);
+
+  useEffect(() => {
     if (!chat?.topic) {
       return undefined;
     }
 
     return client.onPacket((packet) => {
-      const deleteTopic = packet.pres?.src || packet.pres?.topic || packet.meta?.topic || packet.ctrl?.topic;
       const deletedRanges = getDeletedRanges(packet);
 
-      if (deleteTopic === chat.topic && deletedRanges.length > 0) {
+      if (deletedRanges.length > 0 && getPacketTopics(packet).includes(chat.topic)) {
         setMessages((current) =>
           current.filter(
             (message) =>
@@ -1204,6 +1405,28 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
           ),
         );
 
+        return;
+      }
+
+      const receipt = packet.info || packet.pres;
+      const receiptTopic = receipt?.topic || receipt?.src;
+
+      if (
+        receiptTopic === chat.topic &&
+        ['read', 'recv'].includes(receipt?.what) &&
+        receipt.from &&
+        Number(receipt.seq) > 0
+      ) {
+        setGroupMembers((current) =>
+          mergeMembers(current, [
+            {
+              user: receipt.from,
+              id: receipt.from,
+              title: receipt.from,
+              [receipt.what]: Number(receipt.seq),
+            },
+          ]),
+        );
         return;
       }
 
@@ -1236,6 +1459,32 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
       });
     });
   }, [chat?.topic, client]);
+
+  useEffect(() => {
+    if (status !== 'ready' || !chat?.topic || messages.length === 0) {
+      return;
+    }
+
+    const latestSeq = Math.max(...messages.map((message) => Number(message.seq || 0)));
+
+    if (!Number.isFinite(latestSeq) || latestSeq <= 0 || latestSeq <= lastReadSeqRef.current) {
+      return;
+    }
+
+    lastReadSeqRef.current = latestSeq;
+    client.noteRead(chat.topic, latestSeq, 0);
+    setGroupMembers((current) =>
+      mergeMembers(current, [
+        {
+          user: session.user,
+          id: session.user,
+          title: session.user,
+          read: latestSeq,
+          recv: latestSeq,
+        },
+      ]),
+    );
+  }, [chat?.topic, client, messages, session.user, status]);
 
   useEffect(() => {
     if (status !== 'ready' || !chat?.topic || messages.length === 0) {
@@ -1775,6 +2024,40 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
     setSelectedFiles((current) => [...current, ...files]);
   };
 
+  const handleComposerPaste = (event) => {
+    if (!chat.canWrite || editingMessage || recordingStatus === 'recording') {
+      return;
+    }
+
+    const imageFiles = Array.from(event.clipboardData?.items || [])
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item, index) => {
+        const file = item.getAsFile();
+
+        if (!file) {
+          return null;
+        }
+
+        const extension = file.type.split('/')[1]?.split('+')[0] || 'png';
+        const name = file.name && file.name !== 'image.png'
+          ? file.name
+          : `screenshot-${new Date().toISOString().replace(/[:.]/g, '-')}-${index + 1}.${extension}`;
+
+        return new File([file], name, {
+          type: file.type || 'image/png',
+          lastModified: Date.now(),
+        });
+      })
+      .filter(Boolean);
+
+    if (imageFiles.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    setSelectedFiles((current) => [...current, ...imageFiles]);
+  };
+
   const canAttachFiles = chat.canWrite && !editingMessage && recordingStatus !== 'recording' && sendStatus !== 'loading';
 
   const resetFileDragState = () => {
@@ -2131,11 +2414,52 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
         <span className="avatar large" aria-hidden="true">
           {getInitials(chat.title)}
         </span>
-        <div>
+        <button
+          className="conversation-title-button"
+          type="button"
+          onClick={() => chat.isGroup && setMembersPanelOpen((current) => !current)}
+          disabled={!chat.isGroup}
+          title={chat.isGroup ? 'Показать участников группы' : undefined}
+        >
           <h2>{chat.title}</h2>
-          <p>{chat.isGroup ? 'Группа' : 'Диалог'}</p>
-        </div>
+          <p>
+            {chat.isGroup
+              ? `Группа${groupMembers.length ? `, ${groupMembers.length} участников` : ''}`
+              : 'Диалог'}
+          </p>
+        </button>
       </header>
+
+      {membersPanelOpen && chat.isGroup && (
+        <aside className="group-members-panel" aria-label="Участники группы">
+          <div className="group-members-header">
+            <strong>Участники</strong>
+            <button type="button" onClick={() => setMembersPanelOpen(false)} aria-label="Закрыть список участников">
+              x
+            </button>
+          </div>
+          {membersStatus === 'loading' && <div className="group-members-state">Загружаем...</div>}
+          {membersStatus === 'error' && <div className="group-members-state">Не удалось загрузить участников</div>}
+          {membersStatus === 'ready' && groupMembers.length === 0 && (
+            <div className="group-members-state">Участники не найдены</div>
+          )}
+          {groupMembers.length > 0 && (
+            <div className="group-members-list">
+              {groupMembers.map((member) => (
+                <div className="group-member-item" key={member.user}>
+                  <span className={`avatar member-avatar ${getAvatarTone(member.user || member.title)}`} aria-hidden="true">
+                    {getInitials(member.title)}
+                  </span>
+                  <span>
+                    <strong>{getMemberTitle([member], member.user)}</strong>
+                    <small>{getMemberSubtitle(member)}</small>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </aside>
+      )}
 
       <div className="message-area" ref={messageAreaRef} onScroll={handleMessageScroll}>
         {status === 'loading' && (
@@ -2165,6 +2489,9 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
             {olderStatus === 'loading' && <div className="history-loader">Загружаем предыдущие сообщения...</div>}
             {messages.map((message, index) => {
               const mine = message.from === session.user;
+              const showGroupAuthor = chat.isGroup && !mine;
+              const authorTitle = showGroupAuthor ? getMemberTitle(groupMembers, message.from) : '';
+              const receiptStatus = mine ? getMessageReceiptStatus(message, groupMembers, session.user) : '';
               const dateKey = getMessageDateKey(message.createdAt);
               const previousDateKey = getMessageDateKey(messages[index - 1]?.createdAt);
               const showDate = dateKey && dateKey !== previousDateKey;
@@ -2172,39 +2499,58 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
               return (
                 <div className="message-item-group" key={message.id}>
                   {showDate && <div className="message-date-label">{formatMessageDate(message.createdAt)}</div>}
-                  <article
-                    className={`message-bubble ${mine ? 'mine' : ''} ${messageMenu?.message?.id === message.id ? 'menu-open' : ''} ${Number(highlightedSeq) === Number(message.seq) ? 'message-highlight' : ''}`}
-                    data-message-seq={message.seq || undefined}
-                    onContextMenu={(event) => openMessageMenu(event, message)}
-                  >
-                    {message.reply && (
-                      <button
-                        className="reply-preview reply-preview-clickable"
-                        type="button"
-                        onClick={() => jumpToQuotedMessage(message.reply)}
-                        title="Перейти к цитируемому сообщению"
-                      >
-                        <strong>Ответ на сообщение</strong>
-                        <span>{getReplyPreview(message.reply, messages, replyPreviews)}</span>
-                      </button>
+                  <div className={`message-row ${mine ? 'mine' : ''} ${showGroupAuthor ? 'with-author' : ''}`}>
+                    {showGroupAuthor && (
+                      <span className={`avatar message-author-avatar ${getAvatarTone(message.from)}`} aria-hidden="true">
+                        {getInitials(authorTitle)}
+                      </span>
                     )}
-                    {message.text && <p>{message.text}</p>}
-                    <MessageAttachments
-                      attachments={message.attachments}
-                      token={session.token}
-                      onMediaLoad={scrollToBottomIfNeeded}
-                    />
-                    {!message.text && !message.attachments?.length && <p>Сообщение без текста</p>}
-                    <footer>
-                      <time>
-                        {formatMessageTime(message.createdAt)}
-                        {message.editedAt && ' · изменено'}
-                      </time>
-                      <button type="button" onClick={() => setReplyTo(message)}>
-                        Ответить
-                      </button>
-                    </footer>
-                  </article>
+                    <div className="message-stack">
+                      {showGroupAuthor && <span className="message-author-name">{authorTitle}</span>}
+                      <article
+                        className={`message-bubble ${mine ? 'mine' : ''} ${messageMenu?.message?.id === message.id ? 'menu-open' : ''} ${Number(highlightedSeq) === Number(message.seq) ? 'message-highlight' : ''}`}
+                        data-message-seq={message.seq || undefined}
+                        onContextMenu={(event) => openMessageMenu(event, message)}
+                      >
+                        {message.reply && (
+                          <button
+                            className="reply-preview reply-preview-clickable"
+                            type="button"
+                            onClick={() => jumpToQuotedMessage(message.reply)}
+                            title="Перейти к цитируемому сообщению"
+                          >
+                            <strong>Ответ на сообщение</strong>
+                            <span>{getReplyPreview(message.reply, messages, replyPreviews)}</span>
+                          </button>
+                        )}
+                        {message.text && <p>{message.text}</p>}
+                        <MessageAttachments
+                          attachments={message.attachments}
+                          token={session.token}
+                          onMediaLoad={scrollToBottomIfNeeded}
+                        />
+                        {!message.text && !message.attachments?.length && <p>Сообщение без текста</p>}
+                        <footer>
+                          <time>
+                            {formatMessageTime(message.createdAt)}
+                            {message.editedAt && ' · изменено'}
+                          </time>
+                          {mine && receiptStatus === 'read' && (
+                            <span
+                              className="message-receipt read"
+                              title={getReceiptLabel('read')}
+                              aria-label={getReceiptLabel('read')}
+                            >
+                              <img src={readIconSrc} alt="" aria-hidden="true" />
+                            </span>
+                          )}
+                          <button type="button" onClick={() => setReplyTo(message)}>
+                            Ответить
+                          </button>
+                        </footer>
+                      </article>
+                    </div>
+                  </div>
                 </div>
               );
             })}
@@ -2352,6 +2698,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
               placeholder="Написать сообщение"
               rows={1}
               onChange={(event) => setDraft(event.target.value)}
+              onPaste={handleComposerPaste}
               onKeyDown={(event) => {
                 if (event.key !== 'Enter') {
                   return;
