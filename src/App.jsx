@@ -10,6 +10,7 @@ import {
   hasApiKey,
   isAuthenticationError,
   loadChatList,
+  markTopicRead,
   loadTopicMessageBySeq,
   loadTopicMessages,
   loginWithWordColor,
@@ -1472,19 +1473,33 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
     }
 
     lastReadSeqRef.current = latestSeq;
-    client.noteRead(chat.topic, latestSeq, 0);
-    setGroupMembers((current) =>
-      mergeMembers(current, [
-        {
-          user: session.user,
-          id: session.user,
-          title: session.user,
-          read: latestSeq,
-          recv: latestSeq,
-        },
-      ]),
-    );
-  }, [chat?.topic, client, messages, session.user, status]);
+    client.noteRead(chat.topic, latestSeq);
+    markTopicRead(session.token, chat.topic, latestSeq)
+      .then(() => {
+        if (currentTopicRef.current !== chat.topic) {
+          return;
+        }
+
+        setGroupMembers((current) =>
+          mergeMembers(current, [
+            {
+              user: session.user,
+              id: session.user,
+              title: session.user,
+              read: latestSeq,
+              recv: latestSeq,
+            },
+          ]),
+        );
+      })
+      .catch((requestError) => {
+        lastReadSeqRef.current = 0;
+
+        if (isAuthenticationError(requestError)) {
+          onSessionExpired?.();
+        }
+      });
+  }, [chat?.topic, client, messages, onSessionExpired, session.token, session.user, status]);
 
   useEffect(() => {
     if (status !== 'ready' || !chat?.topic || messages.length === 0) {
@@ -2858,7 +2873,22 @@ function MessengerScreen({ session, onLogout, onSessionExpired, theme, onToggleT
     }
 
     setChats((current) =>
-      current.map((chat) => (chat.id === selectedId ? { ...chat, unread: 0 } : chat)),
+      current.map((chat) => {
+        if (chat.id !== selectedId) {
+          return chat;
+        }
+
+        const seq = Number(chat.raw?.seq || 0);
+
+        return {
+          ...chat,
+          unread: 0,
+          raw: {
+            ...chat.raw,
+            read: seq || chat.raw?.read,
+          },
+        };
+      }),
     );
   }, [selectedId]);
 

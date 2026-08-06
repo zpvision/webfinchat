@@ -1357,24 +1357,20 @@ export class FinchatRealtimeClient {
     return normalizeUserProfile(user, packet.meta?.desc || {});
   }
 
-  note(topic, what, seq, unread) {
+  note(topic, what, seq) {
     const targetSeq = Number(seq);
 
     if (!topic || !['read', 'recv'].includes(what) || !Number.isFinite(targetSeq) || targetSeq <= 0) {
-      return;
+      return Promise.resolve();
     }
 
-    this.connect()
+    return this.attach(topic)
       .then(() => {
         const note = {
           topic,
           what,
           seq: targetSeq,
         };
-
-        if (Number.isFinite(Number(unread))) {
-          note.unread = Number(unread);
-        }
 
         this.socket.send(
           JSON.stringify({
@@ -1385,8 +1381,8 @@ export class FinchatRealtimeClient {
       .catch(() => {});
   }
 
-  noteRead(topic, seq, unread = 0) {
-    this.note(topic, 'read', seq, unread);
+  noteRead(topic, seq) {
+    return this.note(topic, 'read', seq);
   }
 
   async loadOwnProfile(user) {
@@ -1856,6 +1852,49 @@ export async function loadTopicMessageBySeq(token, topic, seq) {
   });
 
   return messages.find((message) => Number(message.seq) === targetSeq) || null;
+}
+
+export async function markTopicRead(token, topic, seq) {
+  const targetSeq = Number(seq);
+
+  if (!token || !topic || !Number.isFinite(targetSeq) || targetSeq <= 0) {
+    return;
+  }
+
+  const socket = await openAuthenticatedSocketWithToken(token);
+
+  try {
+    socket.send(
+      JSON.stringify({
+        sub: {
+          id: 'read-sub',
+          topic,
+        },
+      }),
+    );
+
+    const attachPacket = await waitForPacket(socket, (message) => message.ctrl?.id === 'read-sub', 15000);
+
+    if (attachPacket.ctrl.code >= 300 && !isAlreadySubscribed(attachPacket.ctrl)) {
+      throw createApiError(attachPacket.ctrl);
+    }
+
+    socket.send(
+      JSON.stringify({
+        note: {
+          topic,
+          what: 'read',
+          seq: targetSeq,
+        },
+      }),
+    );
+
+    await delay(250);
+  } finally {
+    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+      socket.close();
+    }
+  }
 }
 
 export async function sendTopicMessage({ token, topic, text, replyTo }) {
