@@ -942,89 +942,6 @@ function createLocalReply(replyTo) {
   };
 }
 
-function getDraftyTextLength(value) {
-  return Array.from(String(value || '')).length;
-}
-
-function createPlainDrafty(text) {
-  return {
-    txt: String(text || ''),
-  };
-}
-
-function truncateDraftyText(text, limit = 160) {
-  const chars = Array.from(String(text || '').replace(/\s+/g, ' ').trim());
-
-  if (chars.length <= limit) {
-    return chars.join('');
-  }
-
-  return `${chars.slice(0, Math.max(0, limit - 1)).join('')}…`;
-}
-
-function createReplyQuoteContent(replyTo) {
-  if (!replyTo?.seq) {
-    return null;
-  }
-
-  const author = replyTo.authorName || replyTo.senderName || '';
-  const body = truncateDraftyText(replyTo.text || replyTo.preview || 'Сообщение');
-  const header = author ? `${author}\n` : '';
-  const text = `${header}${body}`;
-  const quoteLength = getDraftyTextLength(text);
-  const fmt = [
-    {
-      at: 0,
-      len: quoteLength,
-      tp: 'QQ',
-    },
-  ];
-  const ent = [];
-
-  if (author && replyTo.from) {
-    ent.push({
-      tp: 'MN',
-      data: {
-        val: replyTo.from,
-      },
-    });
-    fmt.unshift({
-      at: 0,
-      len: getDraftyTextLength(author),
-      key: 0,
-    });
-  }
-
-  return {
-    txt: text,
-    fmt,
-    ent,
-  };
-}
-
-function prependReplyQuote(replyTo, content) {
-  const quote = createReplyQuoteContent(replyTo);
-
-  if (!quote) {
-    return content;
-  }
-
-  const base = typeof content === 'string' ? createPlainDrafty(content) : content || createPlainDrafty('');
-  const quoteLength = getDraftyTextLength(quote.txt);
-  const quoteEntityCount = quote.ent?.length || 0;
-  const shiftedFormat = (base.fmt || []).map((format) => ({
-    ...format,
-    at: typeof format.at === 'number' && format.at >= 0 ? format.at + quoteLength : format.at,
-    key: typeof format.key === 'number' ? format.key + quoteEntityCount : format.key,
-  }));
-
-  return {
-    txt: `${quote.txt}${base.txt || ''}`,
-    fmt: [...(quote.fmt || []), ...shiftedFormat],
-    ent: [...(quote.ent || []), ...(base.ent || [])],
-  };
-}
-
 export function normalizeMessage(packet, token = '') {
   const message = {
     id: `${packet.topic}-${packet.seq || packet.ts || Math.random()}`,
@@ -1473,9 +1390,9 @@ export class FinchatRealtimeClient {
     }
 
     const head = createReplyHead(replyTo);
-    const content = prependReplyQuote(replyTo, {
+    const content = {
       txt: trimmedText,
-    });
+    };
 
     const packet = await this.publish(topic, {
       idPrefix: 'pub',
@@ -1540,7 +1457,7 @@ export class FinchatRealtimeClient {
     const attachmentMarkers = uploadedFiles.map(() => ' ').join('');
     const contentText = `${trimmedText}${attachmentMarkers}` || ' ';
     const attachmentOffset = trimmedText.length;
-    const content = prependReplyQuote(replyTo, {
+    const content = {
       ent: uploadedFiles.map((uploadedFile) => ({
         data: uploadedFile,
         tp: getAttachmentEntityType(uploadedFile, isVoiceMessage),
@@ -1551,7 +1468,7 @@ export class FinchatRealtimeClient {
         len: 1,
       })),
       txt: contentText,
-    });
+    };
     const head = createReplyHead(replyTo);
 
     const packet = await this.publish(topic, {
@@ -1994,9 +1911,9 @@ export async function sendTopicMessage({ token, topic, text, replyTo }) {
     }
 
     const head = createReplyHead(replyTo);
-    const content = prependReplyQuote(replyTo, {
+    const content = {
       txt: trimmedText,
-    });
+    };
 
     socket.send(
       JSON.stringify({
