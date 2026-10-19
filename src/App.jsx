@@ -1,5 +1,6 @@
 ﻿import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { CallPanel, useCalls } from './Calls.jsx';
 import {
   FinchatRealtimeClient,
   createPdfViewUrl,
@@ -1166,7 +1167,7 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-function Conversation({ chat, client, session, onChatActivity, onSessionExpired }) {
+function Conversation({ chat, client, session, onChatActivity, onSessionExpired, calls }) {
   const [messages, setMessages] = useState([]);
   const [status, setStatus] = useState('idle');
   const [messagesVisible, setMessagesVisible] = useState(false);
@@ -2478,8 +2479,20 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired 
             {chat.isGroup
               ? `Группа${participantMembers.length ? `, ${participantMembers.length} участников` : ''}`
               : 'Диалог'}
+            {!chat.isGroup && !calls.ready && <span className="call-availability">{calls.reason}</span>}
           </p>
         </button>
+        {!chat.isGroup && chat.topic?.startsWith('usr') && (
+          <button className="call-start" type="button"
+            disabled={!calls.ready || Boolean(calls.call)}
+            title={!calls.ready ? calls.reason : calls.call ? 'Сначала завершите текущий звонок' : 'Позвонить собеседнику'}
+            onClick={() => calls.start(chat)} aria-label="Позвонить собеседнику">
+            <svg className="toolbar-svg-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m7 3 3 5-2 2c1.4 2.8 3.2 4.6 6 6l2-2 5 3-1 4C10 22 2 14 3 4Z" />
+            </svg>
+            Позвонить
+          </button>
+        )}
       </header>
 
       {membersPanelOpen && chat.isGroup && (
@@ -2802,6 +2815,7 @@ function MessengerScreen({ session, onLogout, onSessionExpired, theme, onToggleT
   const [status, setStatus] = useState('loading');
   const [error, setError] = useState('');
   const client = useMemo(() => new FinchatRealtimeClient(session.token), [session.token]);
+  const calls = useCalls(client);
   const selectedIdRef = useRef(selectedId);
   const subscribedTopicsRef = useRef(new Set());
 
@@ -2861,6 +2875,16 @@ function MessengerScreen({ session, onLogout, onSessionExpired, theme, onToggleT
   }, [session?.token]);
 
   const chatTopicsKey = useMemo(() => chats.map((chat) => chat.topic).join('|'), [chats]);
+
+  useEffect(() => client.onPacket((packet) => {
+    if (packet.connection !== 'opened') return;
+    subscribedTopicsRef.current.clear();
+    chats.forEach((chat) => {
+      client.attach(chat.topic, { optional: true }).then(() => {
+        subscribedTopicsRef.current.add(chat.topic);
+      }).catch(() => {});
+    });
+  }), [client, chatTopicsKey]);
 
   useEffect(() => {
     if (status !== 'ready' || chats.length === 0) {
@@ -2956,6 +2980,7 @@ function MessengerScreen({ session, onLogout, onSessionExpired, theme, onToggleT
 
   return (
     <main className="messenger-page">
+      <CallPanel calls={calls} />
       <aside className="chat-sidebar" aria-label="Список чатов">
         <div className="sidebar-header">
           <div className="sidebar-brand">
@@ -3045,6 +3070,7 @@ function MessengerScreen({ session, onLogout, onSessionExpired, theme, onToggleT
 
       {selectedChat ? (
         <Conversation
+          calls={calls}
           chat={selectedChat}
           client={client}
           session={session}

@@ -2286,3 +2286,46 @@ html[data-theme="dark"] .pdf-modal-stage {
     padding: 0;
   }
 }
+.call-start {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  padding: 9px 12px;
+  border: 1px solid #b5c9d9;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.call-start:disabled { opacity: .5; cursor: not-allowed; }
+.call-availability { display: block; font-size: 12px; opacity: .75; }
+.call-panel {
+  position: fixed;
+  z-index: 100;
+  right: 20px;
+  bottom: 20px;
+  width: min(380px, calc(100vw - 40px));
+  padding: 20px;
+  border: 1px solid #456277;
+  border-radius: 16px;
+  background: #182b3b;
+  color: #fff;
+  box-shadow: 0 12px 40px #0005;
+}
+.call-panel p { margin: 8px 0 16px; }
+.call-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.call-panel button {
+  padding: 9px 12px;
+  border: 1px solid #657c8e;
+  border-radius: 8px;
+  background: #30495d;
+  color: #fff;
+  cursor: pointer;
+}
+.call-panel button:disabled { opacity: .5; cursor: wait; }
+.call-panel .call-answer { background: #237448; }
+.call-panel .call-end { background: #a82f40; }
+.call-error { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.call-error span { flex: 1; }

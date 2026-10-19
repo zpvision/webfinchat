@@ -616,7 +616,8 @@ async function openAuthenticatedSocketWithToken(token) {
       }),
     );
 
-    assertOk(await waitForPacket(socket, (packet) => packet.ctrl?.id === 'chats-hi'), 201);
+    const handshake = assertOk(await waitForPacket(socket, (packet) => packet.ctrl?.id === 'chats-hi'), 201);
+    socket.finchatParams = handshake.params || {};
 
     socket.send(
       JSON.stringify({
@@ -942,13 +943,25 @@ function createLocalReply(replyTo) {
   };
 }
 
+function getCallMessageText(packet) {
+  if (!packet.head?.livekit || !packet.head.webrtc) return '';
+  const labels = {
+    started: 'Аудиозвонок', accepted: 'Звонок принят', finished: 'Звонок завершён',
+    missed: 'Пропущенный звонок', declined: 'Звонок отклонён', disconnected: 'Звонок прерван',
+  };
+  const label = labels[packet.head.webrtc] || 'Звонок';
+  const seconds = Math.floor(Number(packet.head['webrtc-duration'] || 0) / 1000);
+  return Number.isFinite(seconds) && seconds > 0
+    ? `${label} · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : label;
+}
+
 export function normalizeMessage(packet, token = '') {
   const message = {
     id: `${packet.topic}-${packet.seq || packet.ts || Math.random()}`,
     topic: packet.topic,
     seq: packet.seq,
     from: packet.from || '',
-    text: getMessageText(packet.content),
+    text: getCallMessageText(packet) || getMessageText(packet.content),
     attachments: normalizeAttachments(packet.content, token),
     content: packet.content,
     head: packet.head || {},
@@ -995,6 +1008,7 @@ export class FinchatRealtimeClient {
     this.subscribedTopics = new Set();
     this.pendingSubscriptions = new Map();
     this.requestCounter = 0;
+    this.connectPromise = null;
     this.handleMessage = this.handleMessage.bind(this);
   }
 
@@ -1024,15 +1038,35 @@ export class FinchatRealtimeClient {
   }
 
   async connect() {
+    this.closeRequested = false;
     if (this.socket?.readyState === WebSocket.OPEN) {
       return;
     }
 
-    this.socket = await openAuthenticatedSocketWithToken(this.token);
-    this.socket.addEventListener('message', this.handleMessage);
+    if (!this.connectPromise) {
+      this.connectPromise = (async () => {
+        const socket = await openAuthenticatedSocketWithToken(this.token);
+        if (this.closeRequested) {
+          socket.close();
+          throw new Error('Соединение закрыто.');
+        }
+        this.socket = socket;
+        this.subscribedTopics.clear();
+        socket.addEventListener('message', this.handleMessage);
+        socket.addEventListener('close', () => {
+          if (this.socket === socket) {
+            this.subscribedTopics.clear();
+            this.emit({ connection: 'closed' });
+          }
+        });
+        this.emit({ connection: 'opened' });
+      })().finally(() => { this.connectPromise = null; });
+    }
+    await this.connectPromise;
   }
 
   close() {
+    this.closeRequested = true;
     if (!this.socket) {
       return;
     }

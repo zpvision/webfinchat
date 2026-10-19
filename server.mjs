@@ -38,6 +38,10 @@ loadDotEnv();
 const PORT = Number(process.env.PORT || 4173);
 const FINCHAT_HOST = process.env.FINCHAT_HOST || 'api.dev.finchat.club';
 const FINCHAT_API_KEY = process.env.FINCHAT_API_KEY || '';
+const LIVEKIT_URL = new URL(process.env.LIVEKIT_URL || 'wss://call.finchat.club');
+if (LIVEKIT_URL.protocol !== 'wss:') {
+  throw new Error('LIVEKIT_URL must use wss://');
+}
 const MAX_FILE_BYTES = Number(process.env.MAX_FILE_BYTES || 50 * 1024 * 1024);
 const MAX_DOWNLOAD_BYTES = Number(process.env.MAX_DOWNLOAD_BYTES || MAX_FILE_BYTES);
 const DIST_DIR = resolve('dist');
@@ -101,6 +105,8 @@ function setSecurityHeaders(response) {
     "'self'",
     `https://${FINCHAT_HOST}`,
     `wss://${FINCHAT_HOST}`,
+    LIVEKIT_URL.origin,
+    LIVEKIT_URL.origin.replace(/^wss:/, 'https:'),
     'https://mc.yandex.ru',
     'https://mc.yandex.com',
     'wss://mc.yandex.com',
@@ -111,7 +117,7 @@ function setSecurityHeaders(response) {
   response.setHeader('X-Frame-Options', 'DENY');
   response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
-  response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  response.setHeader('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()');
   response.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   response.setHeader(
     'Content-Security-Policy',
@@ -124,6 +130,7 @@ function setSecurityHeaders(response) {
       "frame-ancestors 'none'",
       "frame-src 'self' blob:",
       "img-src 'self' blob: data: https://mc.yandex.ru https://mc.yandex.com",
+      "media-src 'self' blob:",
       "object-src 'none'",
       "script-src 'self' https://mc.yandex.ru",
       "style-src 'self'",
