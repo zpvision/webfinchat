@@ -27,12 +27,13 @@ function setup(t, initialState = 'running') {
 test('incoming and outgoing use different patterns; switching stops every old note', async (t) => {
   const x = setup(t);
   x.sounds.setMode('incoming');
-  assert.equal(x.oscillators.length, 6);
+  const incomingNotes = [...x.oscillators];
+  assert.ok(incomingNotes.length > 1);
   assert.ok(x.oscillators.every((oscillator) => oscillator.started >= 10));
   x.sounds.setMode('outgoing');
-  assert.ok(x.oscillators.slice(0, 6).every((oscillator) => oscillator.stops.includes(undefined)));
-  assert.equal(x.oscillators.length, 7);
-  assert.equal(x.oscillators[6].frequency.value, 425);
+  assert.ok(incomingNotes.every((oscillator) => oscillator.stops.includes(undefined)));
+  assert.equal(x.oscillators.length, incomingNotes.length + 1);
+  assert.equal(x.oscillators.at(-1).frequency.value, 425);
 });
 
 test('answering or ending cancels both the repeat timer and scheduled notes', async (t) => {
@@ -56,7 +57,7 @@ test('blocked autoplay exposes a fallback and user activation retries it', async
   x.context.resume = async () => { x.context.state = 'running'; };
   await x.sounds.unlock();
   assert.equal(x.blocked.at(-1), false);
-  assert.equal(x.oscillators.length, 6);
+  assert.ok(x.oscillators.length > 1);
 });
 
 test('a late autoplay permission does not restart an answered call ringtone', async (t) => {
@@ -75,9 +76,10 @@ test('a late autoplay permission does not restart an answered call ringtone', as
 test('repeated unlock gestures do not overlap ringtone patterns', async (t) => {
   const x = setup(t);
   x.sounds.setMode('incoming');
+  const noteCount = x.oscillators.length;
   await x.sounds.unlock();
   await x.sounds.unlock();
-  assert.equal(x.oscillators.length, 6);
+  assert.equal(x.oscillators.length, noteCount);
 });
 
 test('unmount closes audio and prevents late sounds', async (t) => {

@@ -44,10 +44,10 @@ export class CallSounds {
     }
     if (this.timer) return;
     this.playPattern();
-    this.timer = setInterval(() => this.playPattern(), this.mode === 'incoming' ? 4200 : 5000);
+    this.timer = setInterval(() => this.playPattern(), 5000);
   }
 
-  tone(frequency, offset, duration, volume) {
+  tone(frequency, offset, duration, volume, { pluck = false } = {}) {
     const context = this.context;
     const oscillator = context.createOscillator();
     const gain = context.createGain();
@@ -55,8 +55,8 @@ export class CallSounds {
     oscillator.type = 'sine';
     oscillator.frequency.value = frequency;
     gain.gain.setValueAtTime(0, start);
-    gain.gain.linearRampToValueAtTime(volume, start + .025);
-    gain.gain.setValueAtTime(volume, start + duration * .55);
+    gain.gain.linearRampToValueAtTime(volume, start + (pluck ? .018 : .025));
+    if (!pluck) gain.gain.setValueAtTime(volume, start + duration * .55);
     gain.gain.exponentialRampToValueAtTime(.0001, start + duration);
     oscillator.connect(gain);
     gain.connect(context.destination);
@@ -75,11 +75,21 @@ export class CallSounds {
     if (this.mode === 'outgoing') {
       this.tone(425, 0, 1, .10);
     } else {
-      // An original, gentle six-note ringtone, followed by a pause.
-      [659.25, 830.61, 987.77, 659.25, 830.61, 1108.73].forEach((frequency, i) => {
-        this.tone(frequency, [0, .22, .44, 1.05, 1.27, 1.49][i], .42, .09);
-      });
+      this.ringtone();
     }
+  }
+
+  ringtone() {
+    // A soft electric-piano motif in F# major. Quiet harmonics add warmth;
+    // short, fading repeats give it space without leaving a reverb tail on answer.
+    [369.994, 466.164, 554.365, 415.305].forEach((frequency, i) => {
+      const offset = [0, .28, .56, 1.04][i];
+      const volume = [.072, .062, .058, .065][i];
+      this.tone(frequency, offset, 1.1, volume, { pluck: true });
+      this.tone(frequency * 2, offset, .42, volume * .12, { pluck: true });
+      this.tone(frequency, offset + .22, .65, volume * .20, { pluck: true });
+      this.tone(frequency, offset + .44, .65, volume * .07, { pluck: true });
+    });
   }
 
   stop() {
