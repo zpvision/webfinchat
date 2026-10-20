@@ -2487,10 +2487,13 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
             disabled={!calls.ready || Boolean(calls.call)}
             title={!calls.ready ? calls.reason : calls.call ? 'Сначала завершите текущий звонок' : 'Позвонить собеседнику'}
             onClick={() => calls.start(chat)} aria-label="Позвонить собеседнику">
-            <svg className="toolbar-svg-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="m7 3 3 5-2 2c1.4 2.8 3.2 4.6 6 6l2-2 5 3-1 4C10 22 2 14 3 4Z" />
-            </svg>
-            Позвонить
+            <span className="call-start-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 16.4v2.8a1.9 1.9 0 0 1-2.1 1.9A17.4 17.4 0 0 1 3 5.2 1.9 1.9 0 0 1 4.9 3h2.8a1.9 1.9 0 0 1 1.9 1.6c.1.9.4 1.8.7 2.6a1.9 1.9 0 0 1-.4 2l-1.2 1.2a14 14 0 0 0 4.9 4.9l1.2-1.2a1.9 1.9 0 0 1 2-.4c.8.3 1.7.6 2.6.7a1.9 1.9 0 0 1 1.6 2Z" />
+                <path d="M15 3a7 7 0 0 1 6 6m-6-2a3 3 0 0 1 2 2" />
+              </svg>
+            </span>
+            <span>Позвонить</span>
           </button>
         )}
       </header>

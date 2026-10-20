@@ -2289,17 +2289,36 @@ html[data-theme="dark"] .pdf-modal-stage {
 .call-start {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+  flex-shrink: 0;
+  gap: 9px;
   margin-left: auto;
-  padding: 9px 12px;
-  border: 1px solid #b5c9d9;
-  border-radius: 10px;
-  background: transparent;
-  color: inherit;
+  min-height: 44px;
+  padding: 5px 17px 5px 6px;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 15px;
+  background: linear-gradient(135deg, #8b6ad6, #6b54c7);
+  color: #fff;
+  box-shadow: 0 4px 12px #7355c52b, inset 0 1px 0 #ffffff21;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
   cursor: pointer;
+  transition: transform .2s, box-shadow .2s, filter .2s;
 }
-
-.call-start:disabled { opacity: .5; cursor: not-allowed; }
+.call-start-icon { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid #ffffff14; border-radius: 10px; background: #ffffff1c; }
+.call-start-icon svg { width: 19px; height: 19px; }
+.call-start:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.08); box-shadow: 0 6px 18px #7355c540, inset 0 1px 0 #ffffff21; }
+.call-start:active:not(:disabled) { transform: translateY(0); }
+.call-start:focus-visible { outline: 3px solid #b9a3ee; outline-offset: 3px; }
+.call-start:disabled { opacity: .5; box-shadow: none; cursor: not-allowed; }
+@media (max-width: 380px) {
+  .call-start { gap: 6px; padding-right: 10px; font-size: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .call-start { transition: none; }
+}
 .call-availability { display: block; font-size: 12px; opacity: .75; }
 .call-overlay {
   position: fixed;
