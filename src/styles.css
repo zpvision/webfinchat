@@ -2330,6 +2330,13 @@ html[data-theme="dark"] .pdf-modal-stage {
 }
 
 .call-artwork { position: relative; height: 218px; }
+.call-scenery { position: absolute; inset: 0; overflow: hidden; }
+.call-scene { position: absolute; inset: 0; opacity: 0; animation: call-scenery-fade 70s linear infinite; }
+.call-scene-0 { animation-delay: -3s; }
+.call-scene-1 { animation-delay: 11s; }
+.call-scene-2 { animation-delay: 25s; }
+.call-scene-3 { animation-delay: 39s; }
+.call-scene-4 { animation-delay: 53s; }
 .call-artwork::after {
   position: absolute;
   inset: 0;
@@ -2456,6 +2463,7 @@ html[data-theme="dark"] .pdf-modal-stage {
 @keyframes call-panel-in { from { opacity: 0; transform: translateY(14px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes call-ring { 0% { transform: scale(.85); opacity: .7; } 100% { transform: scale(1.25); opacity: 0; } }
 @keyframes call-wave { from { transform: scaleY(.5); opacity: .5; } to { transform: scaleY(1.3); opacity: 1; } }
+@keyframes call-scenery-fade { 0% { opacity: 0; } 4.2857%, 20% { opacity: 1; } 24.2857%, 100% { opacity: 0; } }
 @media (max-width: 480px), (max-height: 720px) {
   .call-overlay { padding: 16px; }
   .call-panel { max-height: calc(100dvh - 32px); border-radius: 24px; }
@@ -2470,4 +2478,6 @@ html[data-theme="dark"] .pdf-modal-stage {
 @media (prefers-reduced-motion: reduce) {
   .call-overlay, .call-panel, .call-avatar-ring, .call-visualizer span { animation: none !important; }
   .call-control-button { transition: none; }
+  .call-scene { animation: none; opacity: 0; }
+  .call-scene-0 { opacity: 1; }
 }
