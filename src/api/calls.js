@@ -1,7 +1,7 @@
 const REQUEST_TIMEOUT = 12000;
 const idle = () => ({ ready: false, reason: 'Подключаем звонки…', call: null, error: '', muted: false, needsAudio: false });
 
-// Finchat carries signalling; only LiveKit handles microphone tracks and audio.
+// Tinode carries signalling; the same LiveKit room handles audio and camera tracks.
 export class CallController {
   constructor(client, { createRoom, onChange = () => {} } = {}) {
     this.client = client;
@@ -126,13 +126,13 @@ export class CallController {
     if (this.versions.size > 500) this.versions.delete(this.versions.keys().next().value);
     const event = payload.event || info.event;
     if (event === 'invite') {
-      if (!this.state.ready || this.closed.has(callId) || payload.group || payload.audioOnly === false) return;
+      if (!this.state.ready || this.closed.has(callId) || payload.group) return;
       const expiresAt = Date.parse(payload.expiresAt);
       if (!Number.isFinite(expiresAt) || expiresAt <= Date.now() || this.state.call) return;
       const topic = payload.topic || info.src;
       const seq = Number(payload.seq || info.seq);
       if (!topic?.startsWith('usr') || !seq) return;
-      const call = { callId, topic, seq, title: payload.title || topic, phase: 'incoming', expiresAt, incoming: true };
+      const call = { callId, topic, seq, type: payload.audioOnly === false ? 'video' : 'audio', title: payload.title || topic, phase: 'incoming', expiresAt, incoming: true };
       this.update({ call, error: '', muted: false });
       this.armTimeout(call, expiresAt - Date.now());
       this.note(call, 'ringing').catch((error) => this.update({ error: error.message }));
@@ -182,9 +182,9 @@ export class CallController {
     stream.getTracks().forEach((track) => track.stop());
   }
 
-  async start(chat) {
+  async start(chat, type = 'audio') {
     if (!this.state.ready || this.state.call || !chat.topic?.startsWith('usr')) return;
-    const call = { topic: chat.topic, title: chat.title, seq: 0, phase: 'preparing', incoming: false };
+    const call = { type: type === 'video' ? 'video' : 'audio', topic: chat.topic, title: chat.title, seq: 0, phase: 'preparing', incoming: false };
     this.update({ call, error: '', muted: false });
     try {
       await this.checkMicrophone();
@@ -195,7 +195,7 @@ export class CallController {
       this.updateCall(call, { phase: 'starting' });
       let info;
       try {
-        info = await this.request({ pub: { id, topic: call.topic, head: { webrtc: 'started', aonly: true }, content: 'Аудиозвонок' } }, id, 'start', call);
+        info = await this.request({ pub: { id, topic: call.topic, head: { webrtc: 'started', aonly: call.type === 'audio' }, content: call.type === 'video' ? 'Видеозвонок' : 'Аудиозвонок' } }, id, 'start', call);
       } catch (error) {
         // A lost token/ctrl must never create a second call.
         const status = await this.note(call, 'status', 'status');
@@ -252,6 +252,25 @@ export class CallController {
     const room = this.createRoom ? this.createRoom() : new Room();
     this.room = room;
     const current = () => this.state.call === call && this.room === room && !this.disposed;
+    const syncVideo = () => {
+      if (!current()) return;
+      const camera = room.localParticipant.getTrackPublication(Track.Source.Camera);
+      const localVideo = camera && !camera.isMuted ? camera.track || null : null;
+      const remoteVideos = [...room.remoteParticipants.values()].flatMap((participant) => {
+        const publication = participant.getTrackPublication(Track.Source.Camera);
+        return publication?.track && publication.isSubscribed && !publication.isMuted
+          ? [{ identity: participant.identity, name: participant.name, track: publication.track }] : [];
+      });
+      this.update({ localVideo, cameraEnabled: Boolean(localVideo), remoteVideos });
+    };
+    this.syncVideo = syncVideo;
+    for (const event of [RoomEvent.ParticipantConnected, RoomEvent.ParticipantDisconnected,
+      RoomEvent.TrackSubscribed, RoomEvent.TrackUnsubscribed, RoomEvent.TrackPublished,
+      RoomEvent.TrackUnpublished, RoomEvent.LocalTrackPublished, RoomEvent.LocalTrackUnpublished,
+      RoomEvent.TrackMuted, RoomEvent.TrackUnmuted]) room.on(event, syncVideo);
+    const devicesChanged = () => this.refreshCameras(room);
+    navigator.mediaDevices?.addEventListener?.('devicechange', devicesChanged);
+    this.removeDeviceListener = () => navigator.mediaDevices?.removeEventListener?.('devicechange', devicesChanged);
     const markActive = () => {
       if (!current()) return;
       const hasAudio = [...room.remoteParticipants.values()].some((participant) =>
@@ -270,15 +289,16 @@ export class CallController {
       markActive();
     });
     room.on(RoomEvent.TrackUnsubscribed, (track) => track.detach().forEach((element) => {
-      this.audioElements.delete(element);
-      element.remove();
+      element.srcObject = null;
+      // React owns video elements; only controller-owned audio nodes are removed here.
+      if (this.audioElements.delete(element)) element.remove();
     }));
     room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
       if (current()) this.update({ needsAudio: !room.canPlaybackAudio });
     });
     room.on(RoomEvent.Reconnecting, () => { if (current()) this.updateCall(call, { phase: 'reconnecting' }); });
     room.on(RoomEvent.Reconnected, () => {
-      if (current()) { this.updateCall(call, { phase: call.accepted ? 'connecting' : 'outgoing' }); markActive(); }
+      if (current()) { this.updateCall(call, { phase: call.accepted ? 'connecting' : 'outgoing' }); markActive(); syncVideo(); }
     });
     room.on(RoomEvent.Disconnected, () => {
       if (current()) this.fail(call, new Error('Медиасоединение потеряно. Попробуйте позвонить снова.'));
@@ -287,8 +307,66 @@ export class CallController {
     if (!current()) { await room.disconnect(); return; }
     await room.localParticipant.setMicrophoneEnabled(true, { echoCancellation: true, noiseSuppression: true });
     if (!current()) { await room.disconnect(); return; }
+    if (call.type === 'video') await this.setCamera(true);
+    if (!current()) { await room.disconnect(); return; }
+    syncVideo();
     await room.startAudio().catch(() => { if (current()) this.update({ needsAudio: true }); });
     markActive();
+  }
+
+  async refreshCameras(room = this.room) {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      if (this.room === room) this.update({ cameras: devices.filter((device) => device.kind === 'videoinput') });
+    } catch { /* Enumeration must not interrupt audio. */ }
+  }
+
+  async setCamera(enabled) {
+    const room = this.room;
+    if (!room || this.state.cameraBusy) return;
+    this.update({ cameraBusy: true });
+    try {
+      await room.localParticipant.setCameraEnabled(enabled);
+      if (this.room !== room || this.disposed) {
+        await room.localParticipant.setCameraEnabled(false);
+        room.localParticipant.getTrackPublication('camera')?.track?.stop();
+        return;
+      }
+      this.syncVideo?.();
+      await this.refreshCameras(room);
+    } catch (error) {
+      if (this.room === room) {
+        this.update({ error: error.name === 'NotAllowedError'
+          ? 'Нет доступа к камере. Звонок продолжится без видео.'
+          : error.name === 'NotFoundError' ? 'Камера не найдена. Звонок продолжится без видео.'
+            : 'Не удалось включить камеру. Звонок продолжится без видео.' });
+        this.syncVideo?.();
+      }
+    } finally {
+      if (this.room === room) this.update({ cameraBusy: false });
+    }
+  }
+
+  toggleCamera() { return this.setCamera(!this.state.cameraEnabled); }
+
+  async switchCamera() {
+    const room = this.room;
+    if (!room || !this.state.cameraEnabled || this.state.cameraBusy || this.state.cameras.length < 2) return;
+    this.update({ cameraBusy: true });
+    try {
+      const track = room.localParticipant.getTrackPublication('camera')?.track;
+      const deviceId = await track?.getDeviceId();
+      if (this.room !== room) return;
+      const devices = this.state.cameras;
+      const next = devices[(devices.findIndex((device) => device.deviceId === deviceId) + 1) % devices.length];
+      if (!await room.switchActiveDevice('videoinput', next.deviceId)) throw new Error('camera');
+      if (this.room === room) this.syncVideo?.();
+    } catch {
+      if (this.room === room) this.update({ error: 'Не удалось переключить камеру.' });
+    } finally {
+      if (this.room === room) this.update({ cameraBusy: false });
+      else room.localParticipant.getTrackPublication('camera')?.track?.stop();
+    }
   }
 
   async toggleMicrophone() {
@@ -349,13 +427,22 @@ export class CallController {
   stopMedia() {
     const room = this.room;
     this.room = null;
+    this.removeDeviceListener?.();
+    this.removeDeviceListener = null;
+    this.syncVideo = null;
     if (room) {
+      for (const participant of [room.localParticipant, ...(room.remoteParticipants?.values() || [])]) {
+        for (const publication of participant?.trackPublications?.values() || []) {
+          publication.track?.detach().forEach((element) => { element.srcObject = null; });
+          if (participant === room.localParticipant) publication.track?.stop();
+        }
+      }
       room.removeAllListeners();
       Promise.resolve(room.disconnect()).catch(() => {});
     }
     this.audioElements.forEach((element) => element.remove());
     this.audioElements.clear();
-    this.update({ needsAudio: false });
+    this.update({ needsAudio: false, cameraEnabled: false, cameraBusy: false, cameras: [], localVideo: null, remoteVideos: [] });
   }
 
   finish(call) {

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { CallController } from './api/calls.js';
 import { CallSounds } from './api/callSounds.js';
 import { CallScenery } from './CallScenery.jsx';
+import { VideoStage } from './calls/VideoStage.jsx';
 
 export function useCalls(client) {
   const [state, setState] = useState({ ready: false, reason: 'Подключаем звонки…', call: null, error: '' });
@@ -38,7 +39,9 @@ export function useCalls(client) {
     ...state,
     soundBlocked,
     enableCallSound: () => sounds.current?.unlock(),
-    start: (chat) => controller.current?.start(chat),
+    start: (chat, type) => controller.current?.start(chat, type),
+    toggleCamera: () => controller.current?.toggleCamera(),
+    switchCamera: () => controller.current?.switchCamera(),
     accept: () => controller.current?.accept(),
     hangUp: () => controller.current?.hangUp(),
     toggleMicrophone: () => controller.current?.toggleMicrophone(),
@@ -57,6 +60,8 @@ const phases = {
 function CallIcon({ name, ...props }) {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
     {name === 'phone' && <path d="m7 3 3 5-2 2c1.4 2.8 3.2 4.6 6 6l2-2 5 3-1 4C10 22 2 14 3 4Z" />}
+    {name === 'camera' && <><rect x="2" y="5" width="13" height="14" rx="3" /><path d="m15 10 7-4v12l-7-4" /></>}
+    {name === 'switch' && <><path d="M3 8h16l-4-4M21 16H5l4 4" /></>}
     {name === 'end' && <path d="M3 15v-4c5-5 13-5 18 0v4h-5v-3a12 12 0 0 0-8 0v3Z" />}
     {(name === 'mic' || name === 'muted') && <><rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4m-4 0h8" />{name === 'muted' && <path d="m3 3 18 18" strokeWidth="2.4" />}</>}
     {name === 'sound' && <><path d="m11 4-6 5H2v6h3l6 5ZM15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14" /></>}
@@ -106,23 +111,24 @@ export function CallPanel({ calls }) {
   };
   return createPortal(
     <div className="call-overlay">
-      <section className={`call-panel ${call ? '' : 'call-panel-message'}`} role="dialog" aria-modal="true"
+      <section className={`call-panel ${call ? '' : 'call-panel-message'} ${calls.localVideo || calls.remoteVideos?.length ? 'call-panel-video' : ''}`} role="dialog" aria-modal="true"
         aria-labelledby="call-title" aria-describedby={call ? 'call-status' : 'call-error-text'}
         ref={panel} tabIndex={-1} onKeyDown={trapFocus}>
         {call && <>
           <div className="call-artwork">
             <CallScenery />
-            <div className="call-brand"><span className="call-brand-dot" /> FINCHAT <span>АУДИОЗВОНОК</span></div>
+            <div className="call-brand"><span className="call-brand-dot" /> FINCHAT <span>{call.type === 'video' || calls.cameraEnabled || calls.remoteVideos?.length ? 'ВИДЕОЗВОНОК' : 'АУДИОЗВОНОК'}</span></div>
             <div className={`call-avatar-wrap ${['incoming', 'outgoing', 'starting'].includes(call.phase) ? 'is-ringing' : ''}`}>
               <div className="call-avatar-ring" /><div className="call-avatar-ring" />
               <div className="call-avatar">{initials}<span className="call-avatar-badge"><CallIcon name="phone" /></span></div>
             </div>
+            <VideoStage localVideo={calls.localVideo} remoteVideos={calls.remoteVideos} />
           </div>
           <div className="call-body">
             <span className="call-eyebrow">{incoming ? 'ВАМ ЗВОНЯТ' : call.phase === 'active' ? 'ВЫ НА СВЯЗИ' : 'БЛИЖЕ, ДАЖЕ НА РАССТОЯНИИ'}</span>
             <h2 id="call-title">{call.title || 'Собеседник'}</h2>
             <div className="call-status" id="call-status" role="status">
-              <span className={`call-status-dot ${call.phase === 'active' ? 'is-active' : ''}`} />{phases[call.phase] || 'Звонок'}
+              <span className={`call-status-dot ${call.phase === 'active' ? 'is-active' : ''}`} />{incoming && call.type === 'video' ? 'Входящий видеозвонок' : phases[call.phase] || 'Звонок'}
             </div>
             <div className={`call-visualizer ${call.phase === 'active' && !calls.muted ? 'is-active' : ''}`} aria-hidden="true">
               {Array.from({ length: 19 }, (_, i) => <span key={i} />)}
@@ -130,6 +136,20 @@ export function CallPanel({ calls }) {
             {call.connectedAt ? <div className="call-duration">{Math.floor(duration / 60)}<span>:</span>{String(duration % 60).padStart(2, '0')}</div>
               : <p className="call-hint">{incoming ? 'Хороший разговор начинается с «привет»' : 'Самое важное — услышать друг друга'}</p>}
             <div className="call-actions">
+              {['active', 'connecting', 'outgoing', 'reconnecting'].includes(call.phase) && <>
+                <div className="call-control">
+                  <button className={`call-control-button ${calls.cameraEnabled ? '' : 'is-muted'}`} type="button"
+                    disabled={calls.cameraBusy} aria-pressed={Boolean(calls.cameraEnabled)}
+                    aria-label={calls.cameraEnabled ? 'Выключить камеру' : 'Включить камеру'} onClick={calls.toggleCamera}>
+                    <CallIcon name="camera" />
+                  </button><span>{calls.cameraEnabled ? 'Камера' : 'Без видео'}</span>
+                </div>
+                {calls.cameraEnabled && calls.cameras?.length > 1 && <div className="call-control">
+                  <button className="call-control-button" type="button" disabled={calls.cameraBusy}
+                    aria-label="Переключить камеру" onClick={calls.switchCamera}><CallIcon name="switch" /></button>
+                  <span>Сменить</span>
+                </div>}
+              </>}
               {['active', 'connecting', 'outgoing', 'reconnecting'].includes(call.phase) && <div className="call-control">
                 <button className={`call-control-button ${calls.muted ? 'is-muted' : ''}`} type="button" aria-pressed={calls.muted}
                   aria-label={calls.muted ? 'Включить микрофон' : 'Выключить микрофон'} onClick={calls.toggleMicrophone}>

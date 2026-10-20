@@ -2482,6 +2482,12 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
             {!chat.isGroup && !calls.ready && <span className="call-availability">{calls.reason}</span>}
           </p>
         </button>
+        {!chat.isGroup && chat.topic?.startsWith('usr') && <button className="call-start" type="button"
+          disabled={!calls.ready || Boolean(calls.call)} onClick={() => calls.start(chat, 'video')}
+          title={!calls.ready ? calls.reason : 'Видеозвонок'} aria-label="Видеозвонок">
+          <span className="call-start-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="2" y="5" width="13" height="14" rx="3"/><path d="m15 10 7-4v12l-7-4"/></svg></span>
+          <span>Видео</span>
+        </button>}
         {!chat.isGroup && chat.topic?.startsWith('usr') && (
           <button className="call-start" type="button"
             disabled={!calls.ready || Boolean(calls.call)}

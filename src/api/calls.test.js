@@ -199,3 +199,123 @@ test('a lost leave result is reconciled through status without a second leave', 
   assert.equal(x.controller.state.call, null);
   assert.equal(x.sent.filter((packet) => packet.note?.payload.action === 'leave').length, 1);
 });
+
+
+test('video start uses existing Tinode aonly contract and call model', async (t) => {
+  const x = setup(t);
+  await x.controller.initialize();
+  const started = x.controller.start({ topic: 'usrPeer' }, 'video');
+  await nextTurn();
+  const id = x.sent[0].pub.id;
+  assert.equal(x.sent[0].pub.head.aonly, false);
+  x.ack(id);
+  x.deliver(x.token(id));
+  await started;
+  assert.equal(x.controller.state.call.type, 'video');
+});
+
+test('incoming video uses existing invite and join flow', async (t) => {
+  const x = setup(t);
+  await x.controller.initialize();
+  x.notify('invite', 1, { audioOnly: false });
+  await nextTurn();
+  assert.equal(x.controller.state.call.type, 'video');
+  x.ack(x.sent[0].note.payload.requestId);
+  const accepted = x.controller.accept();
+  await nextTurn();
+  x.deliver(x.token(x.sent[1].note.payload.requestId));
+  await accepted;
+  assert.equal(x.media.length, 1);
+});
+
+for (const name of ['NotAllowedError', 'NotFoundError']) {
+  test('camera ' + name + ' preserves audio call and room', async (t) => {
+    const x = setup(t);
+    const call = { callId: 'same', type: 'audio', phase: 'active' };
+    x.controller.update({ call });
+    const room = { localParticipant: { setCameraEnabled: async () => { throw Object.assign(new Error(), { name }); } },
+      removeAllListeners() {}, disconnect() {} };
+    x.controller.room = room;
+    await x.controller.setCamera(true);
+    assert.equal(x.controller.room, room);
+    assert.equal(x.controller.state.call, call);
+    assert.equal(x.controller.state.cameraBusy, false);
+    assert.match(x.controller.state.error, /без видео/);
+    assert.equal(x.sent.length, 0);
+  });
+}
+
+test('camera toggles in same room without signaling; late capture is stopped', async (t) => {
+  const x = setup(t);
+  const enabled = [];
+  let finishCapture;
+  let stopped = false;
+  const track = { stop() { stopped = true; }, detach() { return []; } };
+  const room = { localParticipant: {
+    setCameraEnabled(value) { enabled.push(value); return value ? new Promise((resolve) => { finishCapture = resolve; }) : Promise.resolve(); },
+    getTrackPublication() { return { track }; }, trackPublications: new Map([['camera', { track }]]),
+  }, removeAllListeners() {}, disconnect() {} };
+  x.controller.room = room;
+  const pending = x.controller.setCamera(true);
+  x.controller.stopMedia();
+  finishCapture();
+  await pending;
+  assert.deepEqual(enabled, [true, false]);
+  assert.equal(stopped, true);
+  assert.equal(x.controller.state.localVideo, null);
+  assert.equal(x.sent.length, 0);
+});
+
+
+test('media events restore video after reconnect and clear muted or departed participants', async (t) => {
+  const { RoomEvent } = await import('livekit-client');
+  const x = setup(t);
+  const handlers = new Map();
+  const localPublication = { isMuted: false, track: { detach: () => [], stop() {} } };
+  const remotePublication = { isSubscribed: true, isMuted: false, track: { kind: 'video', detach: () => [] } };
+  const remote = { identity: 'peer', getTrackPublication: () => remotePublication, audioTrackPublications: new Map() };
+  const cameras = [];
+  const room = {
+    on(event, handler) { handlers.set(event, [...handlers.get(event) || [], handler]); },
+    remoteParticipants: new Map([['peer', remote]]),
+    localParticipant: { getTrackPublication: () => localPublication, setMicrophoneEnabled: async () => {},
+      setCameraEnabled: async (enabled) => { cameras.push(enabled); localPublication.isMuted = !enabled; } },
+    connect: async () => {}, startAudio: async () => {}, disconnect() {}, removeAllListeners() {},
+  };
+  x.controller.createRoom = () => room;
+  const call = { type: 'audio', phase: 'connecting' };
+  x.controller.update({ call });
+  await CallController.prototype.connectMedia.call(x.controller, call, x.token('id').info);
+  assert.deepEqual(cameras, []);
+  assert.equal(x.controller.state.remoteVideos.length, 1);
+  const emit = (event, ...args) => handlers.get(event)?.forEach((handler) => handler(...args));
+  remotePublication.isMuted = true;
+  emit(RoomEvent.TrackMuted);
+  assert.equal(x.controller.state.remoteVideos.length, 0);
+  remotePublication.isMuted = false;
+  emit(RoomEvent.Reconnecting);
+  emit(RoomEvent.Reconnected);
+  assert.equal(x.controller.state.remoteVideos.length, 1);
+  await x.controller.setCamera(false);
+  assert.equal(x.controller.state.cameraEnabled, false);
+  emit(RoomEvent.Reconnected);
+  assert.equal(x.controller.state.cameraEnabled, false);
+  room.remoteParticipants.clear();
+  emit(RoomEvent.ParticipantDisconnected, remote);
+  assert.equal(x.controller.state.remoteVideos.length, 0);
+  assert.equal(x.sent.length, 0);
+});
+
+test('switching camera reuses room and LiveKit device switch', async (t) => {
+  const x = setup(t);
+  const switches = [];
+  const room = { localParticipant: { getTrackPublication: () => ({ track: { getDeviceId: async () => 'front' } }) },
+    switchActiveDevice: async (...args) => { switches.push(args); return true; },
+    removeAllListeners() {}, disconnect() {} };
+  x.controller.room = room;
+  x.controller.update({ cameraEnabled: true, cameras: [{ deviceId: 'front' }, { deviceId: 'back' }] });
+  await x.controller.switchCamera();
+  assert.deepEqual(switches, [['videoinput', 'back']]);
+  assert.equal(x.controller.room, room);
+  assert.equal(x.sent.length, 0);
+});

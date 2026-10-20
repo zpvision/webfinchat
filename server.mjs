@@ -117,7 +117,7 @@ function setSecurityHeaders(response) {
   response.setHeader('X-Frame-Options', 'DENY');
   response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
-  response.setHeader('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()');
+  response.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=()');
   response.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   response.setHeader(
     'Content-Security-Policy',
