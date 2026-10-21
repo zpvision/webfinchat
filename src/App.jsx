@@ -1,6 +1,7 @@
 ﻿import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CallPanel, useCalls } from './Calls.jsx';
+import { GroupCallBanner, GroupCallBadge } from './calls/GroupCallBanner.jsx';
 import {
   FinchatRealtimeClient,
   createPdfViewUrl,
@@ -2504,6 +2505,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
         )}
       </header>
 
+      {chat.isGroup && <GroupCallBanner chat={chat} calls={calls} members={displayMembers} />}
       {membersPanelOpen && chat.isGroup && (
         <aside className="group-members-panel" aria-label="Участники группы">
           <div className="group-members-header">
@@ -3063,6 +3065,7 @@ function MessengerScreen({ session, onLogout, onSessionExpired, theme, onToggleT
                   <strong>
                     {chat.title}
                     {chat.isGroup && <span className="group-chat-icon" aria-label="Группа" title="Группа" />}
+                    {chat.isGroup && <GroupCallBadge status={calls.groupCalls?.[chat.topic]} />}
                   </strong>
                   <time>{formatChatDate(chat.updatedAt)}</time>
                 </span>

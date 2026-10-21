@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CallController } from './calls.js';
+import { canJoinGroup } from './groupCalls.js';
 
 const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
 function setup(t, supported = true) {
@@ -318,4 +319,257 @@ test('switching camera reuses room and LiveKit device switch', async (t) => {
   assert.deepEqual(switches, [['videoinput', 'back']]);
   assert.equal(x.controller.room, room);
   assert.equal(x.sent.length, 0);
+});
+
+test('audio call can publish its first camera and toggle it without another invite or room', async (t) => {
+  const { RoomEvent } = await import('livekit-client');
+  const x = setup(t);
+  const handlers = new Map();
+  const track = { detach: () => [], stop() {} };
+  let publication;
+  let connects = 0;
+  const emit = (event) => handlers.get(event)?.forEach((handler) => handler());
+  const room = {
+    on(event, handler) { handlers.set(event, [...handlers.get(event) || [], handler]); },
+    remoteParticipants: new Map(),
+    localParticipant: {
+      getTrackPublication: () => publication,
+      setMicrophoneEnabled: async () => {},
+      async setCameraEnabled(enabled) {
+        if (!publication && enabled) {
+          publication = { track, isMuted: false };
+          emit(RoomEvent.LocalTrackPublished);
+        } else if (publication) {
+          publication.isMuted = !enabled;
+          emit(enabled ? RoomEvent.TrackUnmuted : RoomEvent.TrackMuted);
+        }
+        return publication;
+      },
+    },
+    connect: async () => { connects++; }, startAudio: async () => {},
+    disconnect() {}, removeAllListeners() {},
+  };
+  x.controller.createRoom = () => room;
+  const call = { callId: 'original-call', type: 'audio', phase: 'active' };
+  x.controller.update({ call });
+  await CallController.prototype.connectMedia.call(x.controller, call, x.token('id').info);
+  assert.equal(publication, undefined);
+  await x.controller.toggleCamera();
+  assert.equal(x.controller.state.localVideo, track);
+  assert.equal(x.controller.state.cameraEnabled, true);
+  await x.controller.toggleCamera();
+  assert.equal(x.controller.state.localVideo, null);
+  await x.controller.toggleCamera();
+  assert.equal(x.controller.state.localVideo, track);
+  assert.equal(x.controller.state.call, call);
+  assert.equal(x.controller.room, room);
+  assert.equal(connects, 1);
+  assert.equal(x.sent.length, 0);
+});
+
+test('LiveKit publication denial is distinguished from browser camera permission denial', async (t) => {
+  const x = setup(t);
+  const call = { type: 'audio', phase: 'active' };
+  x.controller.update({ call });
+  x.controller.room = {
+    localParticipant: { async setCameraEnabled() {
+      throw Object.assign(new Error('insufficient permissions'), { name: 'PublishTrackError', status: 403 });
+    } }, removeAllListeners() {}, disconnect() {},
+  };
+  await x.controller.toggleCamera();
+  assert.match(x.controller.state.error, /Сервер не разрешил/);
+  assert.equal(x.controller.state.call, call);
+  assert.equal(x.controller.state.cameraBusy, false);
+});
+
+function setupGroup(t, mode = 'notify') {
+  const x = setup(t);
+  Object.assign(x.client.socket.finchatParams.calls, { group: true, groupNotifications: mode, maxParticipants: 50 });
+  x.groupStatus = (id, extra = {}, seq = 7) => x.deliver({ info: {
+    topic: 'grpTeam', what: 'call', seq, payload: { type: 'status', requestId: id,
+      active: true, state: 'active', callId: 'call-1', group: true, audioOnly: false,
+      participation: 'not-joined', expiresAt: new Date(Date.now() - 60000).toISOString(), ...extra },
+  } });
+  x.groupToken = (id) => { const packet = x.token(id); packet.info.topic = 'grpTeam'; x.deliver(packet); };
+  x.groupNotify = (event, version = 1, extra = {}) => x.notify(event, version,
+    { group: true, topic: 'grpTeam', audioOnly: false, ...extra });
+  return x;
+}
+
+test('group notifications advertise a call without taking over UI or sending ringing', async (t) => {
+  const x = setupGroup(t);
+  await x.controller.initialize();
+  x.groupNotify('invite', 1, { ring: false });
+  await nextTurn();
+  assert.equal(x.controller.state.groupReady, true);
+  assert.equal(x.controller.state.maxParticipants, 50);
+  assert.equal(x.controller.state.call, null);
+  assert.equal(canJoinGroup(x.controller.state.groupCalls.grpTeam), true);
+  assert.equal(x.sent.length, 0);
+  x.groupNotify('ended', 2);
+  assert.equal(canJoinGroup(x.controller.state.groupCalls.grpTeam), false);
+});
+
+test('group ringing is shown only when requested and supported', async (t) => {
+  const x = setupGroup(t, 'ring');
+  await x.controller.initialize();
+  x.groupNotify('invite', 1, { ring: true });
+  await nextTurn();
+  assert.equal(x.controller.state.call.group, true);
+  assert.equal(x.controller.state.call.phase, 'incoming');
+  assert.equal(x.sent[0].note.event, 'ringing');
+  x.ack(x.sent[0].note.payload.requestId);
+});
+
+test('group capability is required and unsupported invites never open a call', async (t) => {
+  const x = setup(t);
+  await x.controller.initialize();
+  await x.controller.start({ topic: 'grpTeam' }, 'video');
+  x.notify('invite', 1, { group: true, topic: 'grpTeam', ring: true });
+  assert.equal(x.controller.state.call, null);
+  assert.equal(x.sent.length, 0);
+});
+
+test('group creation checks status first and uses the existing pub/token flow', async (t) => {
+  const x = setupGroup(t);
+  await x.controller.initialize();
+  const started = x.controller.start({ topic: 'grpTeam', title: 'Team' }, 'video');
+  await nextTurn();
+  assert.equal(x.sent[0].note.seq, 0);
+  assert.equal(x.sent[0].note.payload.action, 'status');
+  x.groupStatus(x.sent[0].note.payload.requestId, { active: false, state: 'idle', callId: null, participation: 'none' }, 0);
+  await nextTurn();
+  const pub = x.sent[1].pub;
+  assert.equal(pub.topic, 'grpTeam');
+  assert.equal(pub.head.aonly, false);
+  x.ack(pub.id);
+  x.groupToken(pub.id);
+  await started;
+  assert.equal(x.media.length, 1);
+  assert.equal(x.controller.state.call.group, true);
+});
+
+test('late join to accepted group ignores original invite expiry and creates no pub', async (t) => {
+  const x = setupGroup(t);
+  await x.controller.initialize();
+  const joined = x.controller.joinGroup({ topic: 'grpTeam', title: 'Team' });
+  await nextTurn();
+  x.groupStatus(x.sent[0].note.payload.requestId, { canEnd: true });
+  await nextTurn();
+  assert.equal(x.sent[1].note.payload.action, 'join');
+  assert.equal(x.sent[1].note.seq, 7);
+  x.groupToken(x.sent[1].note.payload.requestId);
+  await joined;
+  assert.equal(x.controller.state.call.callId, 'call-1');
+  assert.equal(x.controller.state.call.canEnd, true);
+  assert.equal(x.media.length, 1);
+  assert.equal(x.sent.some((packet) => packet.pub), false);
+});
+
+test('group leave preserves discoverability and permits intentional rejoin to same call', async (t) => {
+  const x = setupGroup(t);
+  await x.controller.initialize();
+  const join = async () => {
+    const result = x.controller.joinGroup({ topic: 'grpTeam' });
+    await nextTurn();
+    x.groupStatus(x.sent.at(-1).note.payload.requestId);
+    await nextTurn();
+    x.groupToken(x.sent.at(-1).note.payload.requestId);
+    await result;
+  };
+  await join();
+  const ended = x.controller.hangUp();
+  await nextTurn();
+  assert.equal(x.sent.at(-1).note.payload.action, 'leave');
+  x.ack(x.sent.at(-1).note.payload.requestId);
+  await ended;
+  assert.equal(x.controller.state.call, null);
+  assert.equal(canJoinGroup(x.controller.state.groupCalls.grpTeam), true);
+  await join();
+  assert.equal(x.media.length, 2);
+  assert.equal(x.controller.state.call.callId, 'call-1');
+});
+
+test('another device invite dismissal does not close an accepted group participation', async (t) => {
+  const x = setupGroup(t);
+  await x.controller.initialize();
+  const call = { group: true, callId: 'call-1', topic: 'grpTeam', accepted: true, phase: 'active' };
+  x.controller.update({ call });
+  x.groupNotify('answered_elsewhere', 1);
+  x.groupNotify('declined', 2);
+  assert.equal(x.controller.state.call, call);
+  x.groupNotify('ended', 3);
+  assert.equal(x.controller.state.call, null);
+});
+
+test('end for everyone requires canEnd and sends end instead of leave', async (t) => {
+  const x = setupGroup(t);
+  await x.controller.initialize();
+  const call = { group: true, callId: 'call-1', topic: 'grpTeam', seq: 7, phase: 'active' };
+  x.controller.update({ call });
+  await x.controller.hangUp('end');
+  assert.equal(x.sent.length, 0);
+  call.canEnd = true;
+  const ended = x.controller.hangUp('end');
+  await nextTurn();
+  assert.equal(x.sent[0].note.payload.action, 'end');
+  x.ack(x.sent[0].note.payload.requestId);
+  await ended;
+  assert.equal(x.controller.state.call, null);
+});
+
+test('group status arriving after ended cannot resurrect a joinable call', async (t) => {
+  const x = setupGroup(t);
+  await x.controller.initialize();
+  const joining = x.controller.joinGroup({ topic: 'grpTeam' });
+  await nextTurn();
+  x.groupNotify('ended', 2);
+  x.groupStatus(x.sent[0].note.payload.requestId);
+  await joining;
+  assert.equal(x.media.length, 0);
+  assert.equal(canJoinGroup(x.controller.state.groupCalls.grpTeam), false);
+  assert.equal(x.sent.some((packet) => packet.note?.payload.action === 'join'), false);
+});
+
+test('expired ringing is not joinable; accepted group remains joinable after expiresAt', () => {
+  const base = { active: true, callId: 'call', seq: 7, expiresAt: new Date(Date.now() - 60000).toISOString() };
+  assert.equal(canJoinGroup({ ...base, state: 'ringing' }), false);
+  assert.equal(canJoinGroup({ ...base, state: 'active' }), true);
+  assert.equal(canJoinGroup({ ...base, state: 'ending' }), false);
+});
+
+test('group media keeps all participants when cameras are muted or one person leaves', async (t) => {
+  const { RoomEvent } = await import('livekit-client');
+  const x = setupGroup(t);
+  const handlers = new Map();
+  const camera = { isMuted: false, isSubscribed: true, track: { detach: () => [] } };
+  const participant = (identity, video) => ({ identity, name: identity, audioTrackPublications: new Map(),
+    getTrackPublication: (source) => source === 'camera' ? video : undefined });
+  const anna = participant('usrAnna:session', camera);
+  const boris = participant('usrBoris:session', null);
+  const room = {
+    on(event, handler) { handlers.set(event, [...handlers.get(event) || [], handler]); },
+    remoteParticipants: new Map([[anna.identity, anna], [boris.identity, boris]]),
+    localParticipant: { getTrackPublication: () => undefined, setMicrophoneEnabled: async () => {} },
+    connect: async () => {}, startAudio: async () => {}, removeAllListeners() {}, disconnect() {},
+  };
+  x.controller.createRoom = () => room;
+  const call = { group: true, type: 'audio', accepted: true, phase: 'connecting', topic: 'grpTeam' };
+  x.controller.update({ call });
+  await CallController.prototype.connectMedia.call(x.controller, call, x.token('id').info);
+  await nextTurn();
+  x.groupStatus(x.sent.at(-1).note.payload.requestId);
+  await nextTurn();
+  assert.equal(x.controller.state.remoteParticipants.length, 2);
+  assert.equal(x.controller.state.remoteVideos.length, 1);
+  assert.equal(call.phase, 'active');
+  const emit = (event) => handlers.get(event)?.forEach((handler) => handler());
+  camera.isMuted = true;
+  emit(RoomEvent.TrackMuted);
+  assert.equal(x.controller.state.remoteVideos.length, 0);
+  assert.equal(x.controller.state.remoteParticipants.length, 2);
+  room.remoteParticipants.delete(anna.identity);
+  emit(RoomEvent.ParticipantDisconnected);
+  assert.equal(x.controller.state.remoteParticipants.length, 1);
+  assert.equal(x.controller.state.call, call);
 });

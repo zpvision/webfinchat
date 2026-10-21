@@ -1,5 +1,7 @@
+import { canJoinGroup, groupStatus } from './groupCalls.js';
+
 const REQUEST_TIMEOUT = 12000;
-const idle = () => ({ ready: false, reason: 'Подключаем звонки…', call: null, error: '', muted: false, needsAudio: false });
+const idle = () => ({ ready: false, groupReady: false, groupCalls: {}, reason: 'Подключаем звонки…', call: null, error: '', muted: false, needsAudio: false, remoteParticipants: [] });
 
 // Tinode carries signalling; the same LiveKit room handles audio and camera tracks.
 export class CallController {
@@ -12,9 +14,13 @@ export class CallController {
     this.versions = new Map();
     this.closed = new Set();
     this.audioElements = new Set();
+    this.audioTracks = new Map();
     this.unsubscribe = null;
     this.disposed = false;
     this.reconnecting = false;
+    this.groupRequests = new Map();
+    this.groupWatchers = new Map();
+    this.groupRevisions = new Map();
   }
 
   update(patch) {
@@ -43,7 +49,9 @@ export class CallController {
       await this.client.attach('me');
       if (this.disposed) return;
       this.callTimeout = Math.max(1, Number(params.callTimeout) || 30) * 1000;
-      this.update({ ready: true, reason: '' });
+      this.update({ ready: true, groupReady: params.calls?.group === true,
+        groupNotifications: params.calls?.groupNotifications || 'notify',
+        maxParticipants: Number(params.calls?.maxParticipants) || null, reason: '' });
     } catch (error) {
       this.update({ ready: false, reason: error.message || 'Не удалось подключить звонки.' });
       this.scheduleReconnect();
@@ -80,6 +88,86 @@ export class CallController {
       event: ['leave', 'end'].includes(action) ? 'hang-up' : action === 'ringing' ? 'ringing' : 'accept',
       payload: { ...(action === 'ringing' ? {} : { action }), requestId },
     } }, requestId, type);
+  }
+
+  setGroupStatus(topic, status) {
+    if (!topic?.startsWith('grp')) return;
+    this.groupRevisions.set(topic, (this.groupRevisions.get(topic) || 0) + 1);
+    const groupCalls = { ...this.state.groupCalls, [topic]: status };
+    this.update({ groupCalls });
+    const call = this.state.call;
+    if (call?.group && call.topic === topic && call.callId === status.callId) {
+      this.updateCall(call, { canEnd: status.canEnd === true });
+    }
+  }
+
+  refreshGroup(chat) {
+    if (this.disposed) return Promise.reject(new Error('Звонки отключены.'));
+    if (this.groupRequests.has(chat.topic)) return this.groupRequests.get(chat.topic);
+    const revision = this.groupRevisions.get(chat.topic) || 0;
+    const request = this.note({ topic: chat.topic, seq: 0 }, 'status', 'status').then((info) => {
+      if (info.topic !== chat.topic && info.src !== chat.topic) throw new Error('Статус относится к другому чату.');
+      const status = groupStatus(info, chat.title);
+      if ((this.groupRevisions.get(chat.topic) || 0) === revision) {
+        this.setGroupStatus(chat.topic, status);
+        return status;
+      }
+      // A newer invite/ended event may have arrived while status was in flight.
+      return this.state.groupCalls[chat.topic] || status;
+    }).finally(() => {
+      if (this.groupRequests.get(chat.topic) === request) this.groupRequests.delete(chat.topic);
+    });
+    this.groupRequests.set(chat.topic, request);
+    return request;
+  }
+
+  watchGroup(chat) {
+    if (!chat.topic?.startsWith('grp') || !this.state.groupReady) return () => {};
+    const refresh = () => {
+      if (!this.state.ready || this.disposed) return;
+      this.refreshGroup(chat).catch((error) => {
+        if (!this.disposed) this.setGroupStatus(chat.topic, {
+          ...this.state.groupCalls[chat.topic], error: error.message || 'Не удалось проверить звонок.',
+        });
+      });
+    };
+    // The open group also recovers calls whose invite was received while offline.
+    const timer = setInterval(refresh, 15000);
+    const onFocus = () => refresh();
+    globalThis.window?.addEventListener('focus', onFocus);
+    const entry = { refresh, dispose: () => {
+      clearInterval(timer);
+      globalThis.window?.removeEventListener('focus', onFocus);
+    } };
+    this.groupWatchers.set(chat.topic, entry);
+    refresh();
+    return () => {
+      entry.dispose();
+      if (this.groupWatchers.get(chat.topic) === entry) this.groupWatchers.delete(chat.topic);
+    };
+  }
+
+  async joinGroup(chat) {
+    return this.start(chat, 'video', { joinOnly: true });
+  }
+
+  async joinGroupMedia(call) {
+    await this.checkMicrophone();
+    if (this.state.call !== call) return;
+    this.updateCall(call, { phase: 'joining' });
+    let info;
+    try { info = await this.note(call, 'join', 'token'); }
+    catch (error) {
+      const status = await this.note(call, 'status', 'status');
+      if (status.payload.callId !== call.callId || status.payload.participation !== 'this-session'
+        || !['connecting', 'active'].includes(status.payload.state)) throw error;
+      info = await this.note(call, 'join', 'token');
+    }
+    if (info.payload.callId !== call.callId || Number(info.seq) !== Number(call.seq)
+      || (info.topic !== call.topic && info.src !== call.topic)) throw new Error('Ответ относится к другому звонку.');
+    if (this.state.call !== call || this.closed.has(call.callId)) return;
+    this.updateCall(call, { phase: 'connecting', accepted: true });
+    await this.connectMedia(call, info);
   }
 
   handlePacket(packet) {
@@ -125,14 +213,31 @@ export class CallController {
     // Bounded deduplication for the lifetime of this page.
     if (this.versions.size > 500) this.versions.delete(this.versions.keys().next().value);
     const event = payload.event || info.event;
+    const topic = payload.topic || info.src || info.topic;
+    const group = payload.group === true || topic?.startsWith('grp');
+    if (group && this.state.groupReady) {
+      const previous = this.state.groupCalls[topic];
+      if (event === 'invite') {
+        this.setGroupStatus(topic, { ...payload, topic, callId, seq: Number(payload.seq || info.seq),
+          title: payload.title || topic, type: payload.audioOnly === false ? 'video' : 'audio',
+          state: 'ringing', active: true, canEnd: false, error: '' });
+      } else if (event === 'ended' && (!previous || previous.callId === callId)) {
+        this.setGroupStatus(topic, { ...previous, callId, active: false, state: 'idle' });
+      } else if (['accepted', 'cancelled', 'declined', 'left'].includes(event)) {
+        if (event === 'accepted' && previous?.callId === callId) {
+          this.setGroupStatus(topic, { ...previous, active: true, state: 'connecting' });
+        }
+        this.groupWatchers.get(topic)?.refresh();
+      }
+    }
     if (event === 'invite') {
-      if (!this.state.ready || this.closed.has(callId) || payload.group) return;
+      if (!this.state.ready || this.closed.has(callId) || (group && !this.state.groupReady)) return;
+      if (group && (payload.ring === false || (payload.ring !== true && this.state.groupNotifications !== 'ring'))) return;
       const expiresAt = Date.parse(payload.expiresAt);
       if (!Number.isFinite(expiresAt) || expiresAt <= Date.now() || this.state.call) return;
-      const topic = payload.topic || info.src;
       const seq = Number(payload.seq || info.seq);
-      if (!topic?.startsWith('usr') || !seq) return;
-      const call = { callId, topic, seq, type: payload.audioOnly === false ? 'video' : 'audio', title: payload.title || topic, phase: 'incoming', expiresAt, incoming: true };
+      if (!(group ? topic?.startsWith('grp') : topic?.startsWith('usr')) || !seq) return;
+      const call = { callId, topic, seq, group, type: payload.audioOnly === false ? 'video' : 'audio', title: payload.title || topic, phase: 'incoming', expiresAt, incoming: true };
       this.update({ call, error: '', muted: false });
       this.armTimeout(call, expiresAt - Date.now());
       this.note(call, 'ringing').catch((error) => this.update({ error: error.message }));
@@ -141,7 +246,14 @@ export class CallController {
     const call = this.state.call;
     if (call && !call.incoming && !call.callId && call.seq === info.seq
       && call.topic === (payload.topic || info.src || info.topic)) call.callId = callId;
-    if (['cancelled', 'ended', 'declined', 'answered_elsewhere'].includes(event)) {
+    if (['cancelled', 'ended', 'declined', 'answered_elsewhere', 'left'].includes(event)) {
+      // Closing a group invitation must not end an already accepted local participation.
+      if (call?.group && call.callId === callId && call.accepted
+        && ['declined', 'answered_elsewhere'].includes(event)) return;
+      if (call?.group && call.callId === callId && call.accepted && event === 'cancelled') {
+        this.reconcileGroup(call);
+        return;
+      }
       this.rememberClosed(callId);
       if (call?.callId === callId && (event !== 'answered_elsewhere' || (call.incoming && !call.accepted))) {
         this.finish(call);
@@ -155,6 +267,16 @@ export class CallController {
       clearTimeout(this.expiryTimer);
       this.updateCall(call, { phase: call.connectedAt ? 'active' : 'connecting', accepted: true });
     }
+  }
+
+  async reconcileGroup(call) {
+    try {
+      const info = await this.note(call, 'status', 'status');
+      if (this.state.call !== call) return;
+      if (!info.payload.active || info.payload.callId !== call.callId
+        || info.payload.participation !== 'this-session'
+        || ['idle', 'expired', 'ending'].includes(info.payload.state)) this.finish(call);
+    } catch { /* The existing reconnect/status path will retry when signalling recovers. */ }
   }
 
   rememberClosed(callId) {
@@ -182,11 +304,29 @@ export class CallController {
     stream.getTracks().forEach((track) => track.stop());
   }
 
-  async start(chat, type = 'audio') {
-    if (!this.state.ready || this.state.call || !chat.topic?.startsWith('usr')) return;
-    const call = { type: type === 'video' ? 'video' : 'audio', topic: chat.topic, title: chat.title, seq: 0, phase: 'preparing', incoming: false };
+  async start(chat, type = 'audio', { joinOnly = false } = {}) {
+    const group = chat.topic?.startsWith('grp');
+    if (!this.state.ready || this.state.call || (group ? !this.state.groupReady : !chat.topic?.startsWith('usr'))) return;
+    const call = { group, participantNames: chat.participantNames, type: type === 'video' ? 'video' : 'audio', topic: chat.topic, title: chat.title, seq: 0, phase: 'preparing', incoming: false };
     this.update({ call, error: '', muted: false });
     try {
+      if (group) {
+        const status = await this.refreshGroup(chat);
+        if (this.state.call !== call) return;
+        if (status.participation === 'other-session' && canJoinGroup(status)) {
+          throw new Error('Этот звонок уже открыт на другом устройстве. Сначала выйдите из него там.');
+        }
+        if (canJoinGroup(status)) {
+          Object.assign(call, { callId: status.callId, seq: status.seq, type: status.type,
+            canEnd: status.canEnd === true });
+          // Explicit rejoin is allowed after leaving or dismissing the same group call.
+          this.closed.delete(call.callId);
+          await this.joinGroupMedia(call);
+          return;
+        }
+        if (joinOnly) throw new Error('Звонок уже завершился. Можно начать новый.');
+        if (status.active || status.state === 'ending') throw new Error('Предыдущий звонок ещё завершается. Попробуйте немного позже.');
+      }
       await this.checkMicrophone();
       if (this.state.call !== call) return;
       await this.client.attach(call.topic);
@@ -249,25 +389,29 @@ export class CallController {
     if (provider !== 'livekit' || new URL(url).protocol !== 'wss:' || !token) throw new Error('Некорректные параметры медиасервера.');
     const { Room, RoomEvent, Track } = await import('livekit-client');
     if (this.state.call !== call || this.disposed) return;
-    const room = this.createRoom ? this.createRoom() : new Room();
+    const room = this.createRoom ? this.createRoom() : new Room(call.group ? { adaptiveStream: true, dynacast: true } : undefined);
     this.room = room;
     const current = () => this.state.call === call && this.room === room && !this.disposed;
     const syncVideo = () => {
       if (!current()) return;
       const camera = room.localParticipant.getTrackPublication(Track.Source.Camera);
       const localVideo = camera && !camera.isMuted ? camera.track || null : null;
-      const remoteVideos = [...room.remoteParticipants.values()].flatMap((participant) => {
+      const remoteParticipants = [...room.remoteParticipants.values()].map((participant) => {
         const publication = participant.getTrackPublication(Track.Source.Camera);
-        return publication?.track && publication.isSubscribed && !publication.isMuted
-          ? [{ identity: participant.identity, name: participant.name, track: publication.track }] : [];
+        const audio = participant.getTrackPublication(Track.Source.Microphone);
+        return { identity: participant.identity, name: participant.name || participant.identity.split(':')[0],
+          track: publication?.track && publication.isSubscribed && !publication.isMuted ? publication.track : null,
+          microphoneMuted: !audio || audio.isMuted, speaking: participant.isSpeaking === true };
       });
-      this.update({ localVideo, cameraEnabled: Boolean(localVideo), remoteVideos });
+      const remoteVideos = remoteParticipants.filter((participant) => participant.track);
+      this.update({ localVideo, cameraEnabled: Boolean(localVideo), remoteVideos, remoteParticipants });
     };
     this.syncVideo = syncVideo;
     for (const event of [RoomEvent.ParticipantConnected, RoomEvent.ParticipantDisconnected,
       RoomEvent.TrackSubscribed, RoomEvent.TrackUnsubscribed, RoomEvent.TrackPublished,
       RoomEvent.TrackUnpublished, RoomEvent.LocalTrackPublished, RoomEvent.LocalTrackUnpublished,
-      RoomEvent.TrackMuted, RoomEvent.TrackUnmuted]) room.on(event, syncVideo);
+      RoomEvent.TrackMuted, RoomEvent.TrackUnmuted, RoomEvent.ActiveSpeakersChanged,
+      RoomEvent.ParticipantNameChanged]) room.on(event, syncVideo);
     const devicesChanged = () => this.refreshCameras(room);
     navigator.mediaDevices?.addEventListener?.('devicechange', devicesChanged);
     this.removeDeviceListener = () => navigator.mediaDevices?.removeEventListener?.('devicechange', devicesChanged);
@@ -275,24 +419,30 @@ export class CallController {
       if (!current()) return;
       const hasAudio = [...room.remoteParticipants.values()].some((participant) =>
         [...participant.audioTrackPublications.values()].some((publication) => publication.isSubscribed));
-      if (hasAudio) {
+      if (hasAudio || (call.group && (call.accepted || room.remoteParticipants.size > 0))) {
         clearTimeout(this.expiryTimer);
         this.updateCall(call, { phase: 'active', accepted: true, connectedAt: call.connectedAt || Date.now() });
       }
     };
+    room.on(RoomEvent.ParticipantConnected, markActive);
     room.on(RoomEvent.TrackSubscribed, (track) => {
       if (!current() || track.kind !== Track.Kind.Audio) return;
+      if (this.audioTracks.has(track)) { markActive(); return; }
       const element = track.attach();
       element.hidden = true;
       document.body.appendChild(element);
       this.audioElements.add(element);
+      this.audioTracks.set(track, element);
       markActive();
     });
-    room.on(RoomEvent.TrackUnsubscribed, (track) => track.detach().forEach((element) => {
+    room.on(RoomEvent.TrackUnsubscribed, (track) => {
+      this.audioTracks.delete(track);
+      track.detach().forEach((element) => {
       element.srcObject = null;
       // React owns video elements; only controller-owned audio nodes are removed here.
       if (this.audioElements.delete(element)) element.remove();
-    }));
+      });
+    });
     room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
       if (current()) this.update({ needsAudio: !room.canPlaybackAudio });
     });
@@ -312,6 +462,7 @@ export class CallController {
     syncVideo();
     await room.startAudio().catch(() => { if (current()) this.update({ needsAudio: true }); });
     markActive();
+    if (call.group) this.refreshGroup({ topic: call.topic, title: call.title }).catch(() => {});
   }
 
   async refreshCameras(room = this.room) {
@@ -326,19 +477,26 @@ export class CallController {
     if (!room || this.state.cameraBusy) return;
     this.update({ cameraBusy: true });
     try {
-      await room.localParticipant.setCameraEnabled(enabled);
+      const publication = await room.localParticipant.setCameraEnabled(enabled);
       if (this.room !== room || this.disposed) {
         await room.localParticipant.setCameraEnabled(false);
         room.localParticipant.getTrackPublication('camera')?.track?.stop();
         return;
       }
       this.syncVideo?.();
+      if (enabled && (!publication?.track || publication.isMuted)) {
+        throw new Error('Camera publication is not active');
+      }
+      this.update({ error: '' });
       await this.refreshCameras(room);
     } catch (error) {
       if (this.room === room) {
-        this.update({ error: error.name === 'NotAllowedError'
+        this.update({ error: error.name === 'PublishTrackError' && error.status === 403
+          ? 'Сервер не разрешил публикацию камеры в этом звонке. Звонок продолжится без видео.'
+          : error.name === 'NotAllowedError'
           ? 'Нет доступа к камере. Звонок продолжится без видео.'
           : error.name === 'NotFoundError' ? 'Камера не найдена. Звонок продолжится без видео.'
+            : error.name === 'NotReadableError' ? 'Камера занята или недоступна. Звонок продолжится без видео.'
             : 'Не удалось включить камеру. Звонок продолжится без видео.' });
         this.syncVideo?.();
       }
@@ -387,16 +545,24 @@ export class CallController {
     catch { this.update({ error: 'Браузер не разрешил воспроизведение звука.' }); }
   }
 
-  async hangUp() {
+  async hangUp(action = 'leave') {
     const call = this.state.call;
     if (!call || ['starting', 'joining', 'ending'].includes(call.phase)) return;
+    if (action === 'end' && (!call.group || !call.canEnd)) return;
+    action = call.endAction || action;
+    call.endAction = action;
     this.updateCall(call, { phase: 'ending' });
     this.stopMedia();
     clearTimeout(this.expiryTimer);
     if (!call.seq) { this.finish(call); return; }
     try {
-      await this.note(call, 'leave');
+      const result = await this.note(call, action);
+      if (call.group && (action === 'end' || result.params?.state === 'ended')) {
+        const status = this.state.groupCalls[call.topic];
+        if (status?.callId === call.callId) this.setGroupStatus(call.topic, { ...status, active: false, state: 'idle' });
+      }
       this.finish(call);
+      if (call.group) this.groupWatchers.get(call.topic)?.refresh();
     } catch (error) {
       // Never repeat leave blindly when its acknowledgement was lost.
       try {
@@ -442,7 +608,8 @@ export class CallController {
     }
     this.audioElements.forEach((element) => element.remove());
     this.audioElements.clear();
-    this.update({ needsAudio: false, cameraEnabled: false, cameraBusy: false, cameras: [], localVideo: null, remoteVideos: [] });
+    this.audioTracks.clear();
+    this.update({ needsAudio: false, cameraEnabled: false, cameraBusy: false, cameras: [], localVideo: null, remoteVideos: [], remoteParticipants: [] });
   }
 
   finish(call) {
@@ -468,7 +635,11 @@ export class CallController {
           if (!info.payload.active || info.payload.callId !== call.callId
             || ['expired', 'ending', 'idle'].includes(info.payload.state)) this.finish(call);
         }
-        this.update({ ready: true, reason: '' });
+        const params = this.client.socket.finchatParams.calls;
+        this.update({ ready: true, groupReady: params.group === true,
+          groupNotifications: params.groupNotifications || 'notify',
+          maxParticipants: Number(params.maxParticipants) || null, reason: '' });
+        this.groupWatchers.forEach((watcher) => watcher.refresh());
       } catch (error) {
         this.update({ ready: false, reason: error.message });
       } finally {
@@ -489,6 +660,8 @@ export class CallController {
     clearTimeout(this.retryTimer);
     clearTimeout(this.expiryTimer);
     this.unsubscribe?.();
+    this.groupWatchers.forEach((watcher) => watcher.dispose());
+    this.groupWatchers.clear();
     this.stopMedia();
     for (const pending of [...this.pending.values()]) pending.finish(new Error('Звонки отключены.'));
   }

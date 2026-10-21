@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CallController } from './api/calls.js';
 import { CallSounds } from './api/callSounds.js';
 import { CallScenery } from './CallScenery.jsx';
 import { VideoStage } from './calls/VideoStage.jsx';
+import { useCallFullscreen } from './calls/useCallFullscreen.js';
 
 export function useCalls(client) {
   const [state, setState] = useState({ ready: false, reason: 'Подключаем звонки…', call: null, error: '' });
@@ -11,7 +12,8 @@ export function useCalls(client) {
   const sounds = useRef(null);
   const [soundBlocked, setSoundBlocked] = useState(false);
   const soundMode = state.call?.phase === 'incoming' ? 'incoming'
-    : state.call?.phase === 'outgoing' ? 'outgoing' : null;
+    : state.call?.phase === 'outgoing' && !state.call.group ? 'outgoing' : null;
+  const watchGroup = useCallback((chat) => controller.current?.watchGroup(chat), [client]);
   useEffect(() => {
     const instance = new CallSounds({ onBlocked: setSoundBlocked });
     sounds.current = instance;
@@ -40,10 +42,17 @@ export function useCalls(client) {
     soundBlocked,
     enableCallSound: () => sounds.current?.unlock(),
     start: (chat, type) => controller.current?.start(chat, type),
+    watchGroup,
+    joinGroup: (chat) => controller.current?.joinGroup(chat),
+    showCall: () => {
+      const instance = controller.current;
+      if (instance?.state.call) instance.updateCall(instance.state.call, { focusVersion: (instance.state.call.focusVersion || 0) + 1 });
+    },
     toggleCamera: () => controller.current?.toggleCamera(),
     switchCamera: () => controller.current?.switchCamera(),
     accept: () => controller.current?.accept(),
     hangUp: () => controller.current?.hangUp(),
+    endForAll: () => controller.current?.hangUp('end'),
     toggleMicrophone: () => controller.current?.toggleMicrophone(),
     enableAudio: () => controller.current?.enableAudio(),
     dismissError: () => controller.current?.update({ error: '' }),
@@ -64,6 +73,7 @@ function CallIcon({ name, ...props }) {
     {name === 'switch' && <><path d="M3 8h16l-4-4M21 16H5l4 4" /></>}
     {name === 'minimize' && <path d="M5 17h14" />}
     {name === 'expand' && <path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5" />}
+    {name === 'restore' && <path d="M3 8h5V3m13 5h-5V3M8 21v-5H3m13 5v-5h5" />}
     {name === 'end' && <path d="M3 15v-4c5-5 13-5 18 0v4h-5v-3a12 12 0 0 0-8 0v3Z" />}
     {(name === 'mic' || name === 'muted') && <><rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4m-4 0h8" />{name === 'muted' && <path d="m3 3 18 18" strokeWidth="2.4" />}</>}
     {name === 'sound' && <><path d="m11 4-6 5H2v6h3l6 5ZM15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14" /></>}
@@ -76,10 +86,13 @@ export function CallPanel({ calls }) {
   const [, tick] = useState(0);
   const panel = useRef(null);
   const call = calls.call;
+  const fullscreen = useCallFullscreen(panel, call);
   const [minimizedCall, setMinimizedCall] = useState(null);
   const minimized = Boolean(call && minimizedCall === call);
   const visible = Boolean(call || calls.error);
   const modal = visible && !minimized;
+  const minimize = () => { fullscreen.exit(); setMinimizedCall(call); };
+  useEffect(() => { setMinimizedCall(null); }, [call?.focusVersion]);
   useEffect(() => {
     if (!modal) return;
     const previousFocus = document.activeElement;
@@ -105,7 +118,8 @@ export function CallPanel({ calls }) {
     if (minimized) return;
     if (event.key === 'Escape' && call) {
       event.preventDefault();
-      setMinimizedCall(call);
+      if (fullscreen.large) fullscreen.exit();
+      else minimize();
       return;
     }
     if (event.key === 'Escape' && !call) calls.dismissError();
@@ -122,17 +136,23 @@ export function CallPanel({ calls }) {
   };
   return createPortal(
     <div className={`call-overlay ${minimized ? 'call-overlay-minimized' : ''}`}
-      onClick={(event) => { if (call && event.target === event.currentTarget) setMinimizedCall(call); }}>
-      <section className={`call-panel ${call ? '' : 'call-panel-message'} ${calls.localVideo || calls.remoteVideos?.length ? 'call-panel-video' : ''} ${minimized ? 'call-panel-minimized' : ''}`} role="dialog" aria-modal={minimized ? undefined : true}
+      onClick={(event) => { if (call && event.target === event.currentTarget) minimize(); }}>
+      <section className={`call-panel ${call ? '' : 'call-panel-message'} ${call?.group || calls.localVideo || calls.remoteVideos?.length ? 'call-panel-video' : ''} ${call?.group ? 'call-panel-group' : ''} ${minimized ? 'call-panel-minimized' : ''} ${fullscreen.large ? 'call-panel-fullscreen' : ''}`} role="dialog" aria-modal={minimized ? undefined : true}
         aria-label={minimized ? `Звонок: ${call.title || 'Собеседник'}` : undefined}
         aria-labelledby={minimized ? undefined : 'call-title'} aria-describedby={minimized ? undefined : call ? 'call-status' : 'call-error-text'}
         ref={panel} tabIndex={-1} onKeyDown={trapFocus}>
         {call && <>
           <div className="call-window-actions">
+            {!minimized && (call.group || call.type === 'video' || calls.localVideo || calls.remoteVideos?.length > 0) &&
+              <button type="button" className="call-window-button" onClick={fullscreen.toggle}
+                aria-pressed={fullscreen.large} aria-label={fullscreen.large ? 'Обычный размер' : 'Большой экран'}
+                title={fullscreen.large ? 'Обычный размер' : 'Большой экран'}>
+                <CallIcon name={fullscreen.large ? 'restore' : 'expand'} />
+              </button>}
             <button type="button" className="call-window-button"
               aria-label={minimized ? 'Развернуть звонок' : 'Свернуть звонок'}
               title={minimized ? 'Развернуть звонок' : 'Свернуть звонок'}
-              onClick={() => setMinimizedCall(minimized ? null : call)}>
+              onClick={() => { if (minimized) setMinimizedCall(null); else minimize(); }}>
               <CallIcon name={minimized ? 'expand' : 'minimize'} />
             </button>
           </div>
@@ -143,13 +163,18 @@ export function CallPanel({ calls }) {
               <div className="call-avatar-ring" /><div className="call-avatar-ring" />
               <div className="call-avatar">{initials}<span className="call-avatar-badge"><CallIcon name="phone" /></span></div>
             </div>
-            <VideoStage localVideo={calls.localVideo} remoteVideos={calls.remoteVideos} />
+            <VideoStage localVideo={calls.localVideo} remoteVideos={calls.remoteVideos}
+              group={call.group} participants={calls.remoteParticipants} minimized={minimized}
+              participantNames={call.participantNames} microphoneMuted={calls.muted} />
           </div>
           <div className="call-body">
             <span className="call-eyebrow">{incoming ? 'ВАМ ЗВОНЯТ' : call.phase === 'active' ? 'ВЫ НА СВЯЗИ' : 'БЛИЖЕ, ДАЖЕ НА РАССТОЯНИИ'}</span>
             <h2 id="call-title">{call.title || 'Собеседник'}</h2>
             <div className="call-status" id="call-status" role="status">
-              <span className={`call-status-dot ${call.phase === 'active' ? 'is-active' : ''}`} />{incoming && call.type === 'video' ? 'Входящий видеозвонок' : phases[call.phase] || 'Звонок'}
+              <span className={`call-status-dot ${call.phase === 'active' ? 'is-active' : ''}`} />{call.group && call.phase === 'outgoing' ? 'Ожидаем участников…'
+                : incoming && call.group ? 'Приглашение в групповой звонок'
+                  : incoming && call.type === 'video' ? 'Входящий видеозвонок' : phases[call.phase] || 'Звонок'}
+              {call.group && call.accepted && <span>· {(calls.remoteParticipants?.length || 0) + 1} в звонке</span>}
             </div>
             <div className={`call-visualizer ${call.phase === 'active' && !calls.muted ? 'is-active' : ''}`} aria-hidden="true">
               {Array.from({ length: 19 }, (_, i) => <span key={i} />)}
@@ -171,23 +196,27 @@ export function CallPanel({ calls }) {
                   <span>Сменить</span>
                 </div>}
               </>}
-              {['active', 'connecting', 'outgoing', 'reconnecting'].includes(call.phase) && <div className="call-control">
+              {['active', 'connecting', 'outgoing', 'reconnecting'].includes(call.phase) && <div className="call-control call-control-microphone">
                 <button className={`call-control-button ${calls.muted ? 'is-muted' : ''}`} type="button" aria-pressed={calls.muted}
                   aria-label={calls.muted ? 'Включить микрофон' : 'Выключить микрофон'} onClick={calls.toggleMicrophone}>
                   <CallIcon name={calls.muted ? 'muted' : 'mic'} />
                 </button><span>{calls.muted ? 'Без микрофона' : 'Микрофон'}</span>
               </div>}
-              <div className="call-control">
+              <div className="call-control call-control-end">
                 <button className="call-control-button call-end" type="button" onClick={calls.hangUp}
-                  aria-label={incoming ? 'Отклонить звонок' : call.phase === 'end-failed' ? 'Повторить завершение' : 'Завершить звонок'}
+                  aria-label={incoming ? 'Отклонить звонок' : call.phase === 'end-failed' ? 'Повторить завершение' : call.group ? 'Выйти из звонка' : 'Завершить звонок'}
                   disabled={['starting', 'joining', 'ending'].includes(call.phase)}><CallIcon name="end" /></button>
-                <span>{incoming ? 'Отклонить' : call.phase === 'end-failed' ? 'Повторить' : 'Завершить'}</span>
+                <span>{incoming ? 'Отклонить' : call.phase === 'end-failed' ? 'Повторить' : call.group ? 'Выйти' : 'Завершить'}</span>
               </div>
               {incoming && <div className="call-control">
                 <button className="call-control-button call-answer" type="button" onClick={calls.accept} aria-label="Ответить на звонок"><CallIcon name="phone" /></button>
                 <span>Ответить</span>
               </div>}
             </div>
+            {call.group && call.canEnd && call.accepted && !['ending', 'end-failed'].includes(call.phase) &&
+              <button type="button" className="call-end-for-all" onClick={() => {
+                if (window.confirm('Завершить групповой звонок для всех участников?')) calls.endForAll();
+              }}>Завершить для всех</button>}
             {calls.soundBlocked && <button className="call-enable-audio" type="button" onClick={calls.enableCallSound}><CallIcon name="sound" />Включить звук вызова</button>}
             {calls.needsAudio && <button className="call-enable-audio" type="button" onClick={calls.enableAudio}><CallIcon name="sound" />Включить звук</button>}
             <div className="call-footer"><CallIcon name="phone" /><span>Личный разговор в Finchat</span></div>

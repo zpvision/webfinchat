@@ -2511,22 +2511,70 @@ html[data-theme="dark"] .pdf-modal-stage {
 .call-panel-video .call-visualizer, .call-panel-video .call-hint, .call-panel-video .call-footer { display: none; }
 .call-panel-video .call-actions { gap: 22px; }
 .call-panel-video .call-brand { z-index: 2; }
-.call-window-actions { position: absolute; top: 10px; right: 10px; z-index: 4; }
+.call-window-actions { position: absolute; top: 10px; right: 10px; z-index: 4; display: flex; gap: 8px; }
 .call-window-button { display: grid; place-items: center; width: 36px; height: 36px; padding: 7px; border: 1px solid #ffffff40; border-radius: 10px; background: #201d35cc; color: #fff; cursor: pointer; }
 .call-window-button:hover { background: #40365b; }
 .call-window-button svg { width: 22px; height: 22px; }
-.call-panel .call-brand { right: 58px; }
+.call-panel .call-brand { right: 102px; }
 .call-overlay-minimized { inset: 16px 16px auto auto; display: block; width: min(320px, calc(100vw - 32px)); padding: 0; overflow: visible; background: transparent; backdrop-filter: none; }
 .call-panel-minimized { width: 100%; max-height: none; border-radius: 16px; overflow: hidden; }
 .call-panel-minimized .call-artwork { height: auto; aspect-ratio: 16 / 9; }
-.call-panel-minimized .call-body, .call-panel-minimized .call-brand, .call-panel-minimized .call-error { display: none; }
+.call-panel-minimized .call-brand, .call-panel-minimized .call-error { display: none; }
+.call-panel-minimized .call-body { position: absolute; inset: auto 0 0; z-index: 3; padding: 20px 10px 10px; background: linear-gradient(transparent, #14111cbb); }
+.call-panel-minimized .call-body > :not(.call-actions),
+.call-panel-minimized .call-actions > :not(.call-control-microphone):not(.call-control-end),
+.call-panel-minimized .call-control > span { display: none; }
+.call-panel-minimized .call-actions { gap: 12px; }
+.call-panel-minimized .call-control-button { width: 40px; height: 40px; }
+.call-panel-minimized .call-control-button svg { width: 20px; height: 20px; }
 .call-panel-minimized .call-artwork::after { display: none; }
 .call-panel-minimized .call-avatar-wrap { top: 50%; bottom: auto; transform: translate(-50%, -50%); }
-.call-panel-minimized .call-local-video { top: auto; bottom: 10px; right: 10px; width: 27%; max-height: 65%; border-radius: 8px; }
+.call-panel-minimized .call-local-video { top: 54px; bottom: auto; right: 10px; width: 27%; max-height: calc(100% - 110px); border-radius: 8px; }
 .call-panel-minimized .call-video-stage-local-only .call-local-video { inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; border: none; border-radius: 0; }
 @media (max-width: 600px) {
-  .call-panel-video .call-artwork { height: 44dvh; }
+  .call-panel-video:not(.call-panel-minimized) .call-artwork { height: 44dvh; }
   .call-panel-video:not(.call-panel-minimized) .call-local-video { right: 10px; width: 25%; top: 44px; }
   .call-actions { gap: 18px; }
   .call-panel-video .call-actions { gap: 14px; }
+}
+.call-panel-fullscreen { position: fixed; inset: 0; z-index: 1001; display: flex; flex-direction: column; width: 100%; height: 100dvh; max-height: none; border: 0; border-radius: 0; animation: none; overflow: auto; }
+.call-panel.call-panel-fullscreen .call-artwork { flex: 1 1 0; min-height: 120px; height: auto; }
+.call-panel-fullscreen .call-artwork::after { display: none; }
+.call-panel-fullscreen .call-body { flex: 0 0 auto; padding: 12px 16px max(16px, env(safe-area-inset-bottom)); }
+.call-panel-fullscreen .call-body h2 { font-size: 18px; margin: 0 0 4px; }
+.call-panel-fullscreen .call-eyebrow, .call-panel-fullscreen .call-duration,
+.call-panel-fullscreen .call-visualizer, .call-panel-fullscreen .call-hint, .call-panel-fullscreen .call-footer { display: none; }
+.call-panel-fullscreen .call-status { margin-bottom: 10px; }
+.call-panel-fullscreen .call-control-button { width: 48px; height: 48px; }
+.call-panel-fullscreen .call-control { gap: 6px; }
+.call-panel-fullscreen .call-video-stage-local-only .call-local-video { inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; border: 0; border-radius: 0; }
+.call-panel video::-webkit-media-controls { display: none !important; }
+
+.group-call-banner { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 20px; background: #f4f1fc; border-bottom: 1px solid #e4ddf2; }
+.group-call-banner.is-active { background: #edf8f3; border-color: #cce8db; }
+.group-call-banner > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.group-call-banner strong { font-size: 13px; color: #3d3552; }
+.group-call-banner span { font-size: 12px; color: #6f687c; overflow-wrap: anywhere; }
+.group-call-banner .call-start { flex-shrink: 0; }
+.group-call-badge { display: inline-block; margin-left: 8px; font-size: 10px; font-weight: 500; color: #25885f; }
+.call-end-for-all { margin-top: 14px; padding: 6px 12px; border: 1px solid #e86b7950; border-radius: 8px; background: transparent; color: #efabb3; font: inherit; font-size: 12px; cursor: pointer; }
+.call-group-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); grid-auto-rows: minmax(150px, 1fr); gap: 8px; padding: 48px 12px 12px; background: #14111c; overflow: auto; pointer-events: auto; }
+.call-group-grid-single { grid-template-columns: 1fr; }
+.call-panel-group .call-avatar-wrap { display: none; }
+.call-participant-tile { position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; overflow: hidden; border: 2px solid transparent; border-radius: 12px; background: #29243f; }
+.call-participant-tile.is-speaking { border-color: #84d9b0; }
+.call-participant-avatar { display: grid; place-items: center; width: 64px; height: 64px; border-radius: 50%; background: #b4a0d8; color: #382b4f; font-size: 24px; }
+.call-participant-name { position: absolute; left: 8px; right: 8px; bottom: 8px; width: fit-content; max-width: calc(100% - 16px); padding: 3px 8px; border-radius: 6px; background: #14111ccc; color: #fff; font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.call-panel-group .call-participant-tile .call-local-video,
+.call-panel-group .call-participant-tile .call-remote-video { position: static; display: block; width: 100%; height: 100%; max-width: none; max-height: none; border: 0; border-radius: 0; object-fit: contain; }
+.call-panel-group.call-panel-minimized .call-group-grid { padding: 0; grid-auto-rows: minmax(0, 1fr); }
+.call-panel-group.call-panel-minimized .call-participant-name { top: 8px; bottom: auto; right: 54px; }
+.call-panel-group.call-panel-minimized .call-participant-tile { border-radius: 0; }
+.call-panel-group.call-panel-fullscreen .call-group-grid { grid-auto-rows: minmax(180px, 1fr); }
+@media (max-width: 600px) {
+  .group-call-banner { padding: 10px 12px; gap: 10px; flex-wrap: wrap; }
+  .call-group-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(120px, 1fr); padding: 48px 8px 8px; }
+  .call-group-grid-single { grid-template-columns: 1fr; }
+  .call-panel-group.call-panel-minimized .call-group-grid { grid-template-columns: 1fr; }
+  .call-panel-group.call-panel-fullscreen .call-group-grid { grid-auto-rows: minmax(140px, 1fr); }
 }
