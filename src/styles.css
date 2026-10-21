@@ -2551,21 +2551,42 @@ html[data-theme="dark"] .pdf-modal-stage {
 .call-panel video::-webkit-media-controls { display: none !important; }
 
 .group-call-badge { display: inline-block; margin-left: 8px; font-size: 10px; font-weight: 500; color: #25885f; }
-.group-call-notifications { position: fixed; right: 24px; bottom: max(24px, env(safe-area-inset-bottom)); z-index: 900; display: flex; flex-direction: column; gap: 12px; width: min(360px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow-y: auto; pointer-events: none; }
-.group-call-notice { position: relative; display: flex; align-items: flex-start; gap: 12px; padding: 18px 42px 18px 18px; border: 1px solid var(--fc-line); border-radius: 18px; background: var(--fc-bg); color: var(--fc-text); box-shadow: 0 10px 40px #20153530; pointer-events: auto; }
-.group-call-notice-icon { display: grid; place-items: center; flex: 0 0 40px; height: 40px; border-radius: 12px; background: #8b6ad620; color: var(--fc-primary); }
-.group-call-notice-icon svg { width: 23px; height: 23px; }
+.group-call-notifications { position: fixed; inset: 0; z-index: 900; display: grid; place-items: center; padding: 16px; pointer-events: none; }
+.group-call-notice { position: relative; width: min(460px, 100%); max-height: calc(100dvh - 32px); overflow-y: auto; padding: 28px 32px 24px; border: 1px solid #baa3ed70; border-radius: 28px; background: radial-gradient(ellipse at 50% 0%, #ad87ed26, transparent 65%), var(--fc-bg); color: var(--fc-text); text-align: center; box-shadow: 0 24px 100px #20153550, 0 0 0 6px #9b80d710; pointer-events: auto; animation: call-panel-in .3s ease-out; outline: none; }
+.group-call-notice-brand { display: flex; align-items: center; justify-content: center; gap: 7px; color: var(--fc-muted); font-size: 10px; font-weight: 600; letter-spacing: 2px; }
+.group-call-notice-brand > span { width: 6px; height: 6px; border-radius: 50%; background: #a17add; box-shadow: 0 0 12px #a17add80; }
+.group-call-notice-icon { display: grid; place-items: center; width: 76px; height: 76px; margin: 26px auto 22px; border: 1px solid #b390e650; border-radius: 24px; background: linear-gradient(145deg, #b59bdf35, #9370cf15); color: var(--fc-primary); box-shadow: 0 0 0 9px #a882d90a; }
+.group-call-notice-icon svg { width: 34px; height: 34px; }
 .group-call-notice-body { min-width: 0; }
-.group-call-notice-body strong { display: block; font-size: 14px; overflow-wrap: anywhere; }
-.group-call-notice-body p { margin: 5px 0 12px; font-size: 12px; color: var(--fc-muted); }
-.group-call-notice-body small { display: block; margin-top: 8px; font-size: 11px; color: var(--fc-muted); }
-.group-call-notice-join { min-height: 38px; padding: 7px 16px; border: 0; border-radius: 10px; background: linear-gradient(135deg, #8b6ad6, #6b54c7); color: white; font: inherit; font-size: 13px; cursor: pointer; }
+.group-call-notice-eyebrow { display: block; color: var(--fc-muted); font-size: 9px; letter-spacing: 1.6px; }
+.group-call-notice-body strong { display: block; margin-top: 12px; font-size: clamp(23px, 4vw, 30px); font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
+.group-call-notice-body p { margin: 10px 0 24px; font-size: 14px; color: var(--fc-muted); }
+.group-call-notice-body small { display: block; margin-top: 12px; font-size: 11px; line-height: 1.6; color: var(--fc-muted); }
+.group-call-notice-actions { display: flex; justify-content: center; gap: 10px; }
+.group-call-notice-join, .group-call-notice-later { min-height: 44px; padding: 10px 22px; border: 0; border-radius: 13px; font: inherit; font-size: 14px; cursor: pointer; }
+.group-call-notice-join { background: linear-gradient(135deg, #8b6ad6, #6b54c7); color: white; box-shadow: 0 5px 16px #7355c535; }
+.group-call-notice-later { border: 1px solid var(--fc-line); background: #9480bd10; color: var(--fc-text); }
+.group-call-notice-preferences { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 20px; }
+.group-call-notice-permission { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 4px 8px; border: 0; background: transparent; color: var(--fc-muted); font: inherit; font-size: 11px; cursor: pointer; }
+.group-call-notice-permission svg { width: 15px; height: 15px; }
+.group-call-notice-permission:disabled { cursor: default; }
 .group-call-notice-join:disabled { opacity: .5; cursor: not-allowed; }
 .group-call-notice-close { position: absolute; top: 10px; right: 10px; display: grid; place-items: center; width: 30px; height: 30px; padding: 6px; border: 0; border-radius: 8px; background: transparent; color: var(--fc-muted); cursor: pointer; }
 .group-call-notice-close svg { width: 18px; height: 18px; }
 .group-call-notice-close:hover { background: #8b6ad620; }
 .group-call-notice button:focus-visible { outline: 2px solid var(--fc-primary); outline-offset: 3px; }
-@media (max-width: 600px) { .group-call-notifications { right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); } }
+@media (max-width: 600px) { .group-call-notice { padding: 24px 20px 20px; } }
+@media (prefers-reduced-motion: reduce) { .group-call-notice { animation: none; } }
+.call-audio-devices { max-width: 500px; margin: 18px auto 0; color: #c8bfd8; font-size: 12px; text-align: left; }
+.call-audio-devices summary { width: fit-content; margin: auto; padding: 6px 10px; border-radius: 8px; cursor: pointer; }
+.call-audio-devices summary:focus-visible, .call-audio-devices select:focus-visible { outline: 2px solid #e6ccff; outline-offset: 3px; }
+.call-audio-device-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.call-audio-device-fields label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.call-audio-device-fields select { width: 100%; min-height: 40px; padding: 8px; border: 1px solid #ffffff25; border-radius: 10px; background: #2b2540; color: #f9f5ff; font: inherit; }
+.call-audio-device-fields select:disabled { opacity: .55; }
+.call-audio-devices p { margin: 10px 0 0; color: #b9adcb; font-size: 11px; line-height: 1.6; }
+.call-device-choose { margin-top: 10px; padding: 6px 0; border: 0; background: transparent; color: #d4bff0; font: inherit; cursor: pointer; }
+@media (max-width: 480px) { .call-audio-device-fields { grid-template-columns: 1fr; } }
 .call-end-for-all { margin-top: 14px; padding: 6px 12px; border: 1px solid #e86b7950; border-radius: 8px; background: transparent; color: #efabb3; font: inherit; font-size: 12px; cursor: pointer; }
 .call-group-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); grid-auto-rows: minmax(150px, 1fr); gap: 8px; padding: 48px 12px 12px; background: #14111c; overflow: auto; pointer-events: auto; }
 .call-group-grid-single { grid-template-columns: 1fr; }

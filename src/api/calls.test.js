@@ -637,3 +637,90 @@ test('joining a notification never silently joins a newer call in the same group
   assert.equal(x.sent.length, 1);
   assert.equal(x.controller.state.call, null);
 });
+
+function mediaDevices(t, value) {
+  const previous = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
+  Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value });
+  t.after(() => {
+    if (previous) Object.defineProperty(navigator, 'mediaDevices', previous);
+    else delete navigator.mediaDevices;
+  });
+}
+
+test('audio device selection reuses room, preserves mute and does not request camera', async (t) => {
+  const x = setup(t);
+  const devices = [
+    { kind: 'audioinput', deviceId: 'mic-one', label: 'USB mic' },
+    { kind: 'audioinput', deviceId: 'mic-two', label: 'Headset mic' },
+    { kind: 'audiooutput', deviceId: 'headset', label: 'Headphones' },
+  ];
+  mediaDevices(t, { enumerateDevices: async () => devices,
+    getUserMedia: () => { throw new Error('Unexpected permission prompt'); } });
+  const selected = { audioinput: 'mic-one', audiooutput: 'default' };
+  const switches = [];
+  const room = { localParticipant: {}, getActiveDevice: (kind) => selected[kind],
+    async switchActiveDevice(kind, id) { switches.push([kind, id]); selected[kind] = id; return true; },
+    removeAllListeners() {}, disconnect() {} };
+  x.controller.room = room;
+  x.controller.update({ muted: true });
+  await x.controller.refreshDevices();
+  assert.equal(x.controller.state.audioInputs.length, 2);
+  assert.equal(x.controller.state.audioOutputs.length, 1);
+  await x.controller.switchAudioDevice('audioinput', 'mic-two');
+  await x.controller.switchAudioDevice('audiooutput', 'headset');
+  assert.deepEqual(switches, [['audioinput', 'mic-two'], ['audiooutput', 'headset']]);
+  assert.equal(x.controller.state.muted, true);
+  assert.equal(x.controller.state.microphoneDeviceId, 'mic-two');
+  assert.equal(x.controller.state.speakerDeviceId, 'headset');
+  assert.equal(x.controller.room, room);
+  assert.equal(x.sent.length, 0);
+});
+
+test('failed audio device switch keeps previous selection and call connected', async (t) => {
+  const x = setup(t);
+  const call = { phase: 'active' };
+  const room = { localParticipant: {}, async switchActiveDevice() { throw Object.assign(new Error(), { name: 'NotAllowedError' }); },
+    removeAllListeners() {}, disconnect() {} };
+  x.controller.room = room;
+  x.controller.update({ call, microphoneDeviceId: 'old' });
+  await x.controller.switchAudioDevice('audioinput', 'new');
+  assert.equal(x.controller.state.microphoneDeviceId, 'old');
+  assert.equal(x.controller.state.call, call);
+  assert.equal(x.controller.room, room);
+  assert.equal(x.controller.state.audioDeviceBusy, false);
+  assert.match(x.controller.state.deviceError, /Нет разрешения/);
+});
+
+test('late microphone device switch is stopped after hangup', async (t) => {
+  const x = setup(t);
+  let finish;
+  let stopped = false;
+  const track = { stop() { stopped = true; } };
+  let publication = { track };
+  const room = { localParticipant: { getTrackPublication: () => publication },
+    switchActiveDevice: () => new Promise((resolve) => { finish = resolve; }),
+    removeAllListeners() {}, disconnect() {} };
+  x.controller.room = room;
+  const switched = x.controller.switchAudioDevice('audioinput', 'new');
+  x.controller.stopMedia();
+  publication = undefined;
+  finish(true);
+  await switched;
+  assert.equal(stopped, true);
+  assert.equal(x.controller.state.devicesReady, false);
+});
+
+test('speaker chooser starts in user gesture and does not apply selection after hangup', async (t) => {
+  const x = setup(t);
+  let choose;
+  let requested = false;
+  let switched = false;
+  mediaDevices(t, { selectAudioOutput: () => { requested = true; return new Promise((resolve) => { choose = resolve; }); } });
+  x.controller.room = { localParticipant: {}, switchActiveDevice() { switched = true; }, removeAllListeners() {}, disconnect() {} };
+  const pending = x.controller.switchAudioDevice('audiooutput', '', true);
+  assert.equal(requested, true);
+  x.controller.stopMedia();
+  choose({ deviceId: 'speaker' });
+  await pending;
+  assert.equal(switched, false);
+});

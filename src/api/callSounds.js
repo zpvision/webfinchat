@@ -7,6 +7,7 @@ export class CallSounds {
     this.createContext = createContext;
     this.onBlocked = onBlocked;
     this.nodes = new Set();
+    this.playedNotices = new Set();
     this.mode = null;
     this.disposed = false;
   }
@@ -26,10 +27,12 @@ export class CallSounds {
     }
   }
 
-  setMode(mode) {
-    if (this.mode === mode || this.disposed) return;
+  setMode(mode, key = mode) {
+    if ((this.mode === mode && this.modeKey === key) || this.disposed) return;
     this.stop();
     this.mode = mode;
+    this.modeKey = key;
+    this.noticePlayed = this.playedNotices.has(key);
     if (mode) this.unlock();
     else this.onBlocked(false);
   }
@@ -40,6 +43,15 @@ export class CallSounds {
     this.onBlocked(Boolean(this.mode && !playable));
     if (!this.mode || !playable) {
       this.stop();
+      return;
+    }
+    if (this.mode === 'notice') {
+      if (!this.noticePlayed) {
+        this.noticePlayed = true;
+        this.playedNotices.add(this.modeKey);
+        if (this.playedNotices.size > 500) this.playedNotices.delete(this.playedNotices.values().next().value);
+        this.playPattern();
+      }
       return;
     }
     if (this.timer) return;
@@ -72,7 +84,9 @@ export class CallSounds {
 
   playPattern() {
     if (this.context?.state !== 'running' || !this.mode) return;
-    if (this.mode === 'outgoing') {
+    if (this.mode === 'notice') {
+      [523.25, 659.25, 783.99].forEach((frequency, index) => this.tone(frequency, index * .16, .45, .055, { pluck: true }));
+    } else if (this.mode === 'outgoing') {
       this.tone(425, 0, 1, .10);
     } else {
       this.ringtone();

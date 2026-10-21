@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { CallPanel, useCalls } from './Calls.jsx';
 import { GroupCallButton, GroupCallBadge } from './calls/GroupCallButton.jsx';
 import { GroupCallNotifications } from './calls/GroupCallNotifications.jsx';
+import { NotificationPermissionButton } from './calls/NotificationPermissionButton.jsx';
 import {
   FinchatRealtimeClient,
   createPdfViewUrl,
@@ -3002,6 +3003,7 @@ function MessengerScreen({ session, onLogout, onSessionExpired, theme, onToggleT
             <h1>FinChat</h1>
           </div>
           <div className="sidebar-actions">
+            <NotificationPermissionButton calls={calls} compact />
             <button className="theme-button" type="button" onClick={onToggleTheme} title="Сменить тему" aria-label="Сменить тему">
               {theme === 'dark' ? (
                 <svg className="toolbar-svg-icon" aria-hidden="true" viewBox="0 0 24 24">

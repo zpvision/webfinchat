@@ -1,7 +1,9 @@
 import { canJoinGroup, groupStatus } from './groupCalls.js';
 
 const REQUEST_TIMEOUT = 12000;
-const idle = () => ({ ready: false, groupReady: false, groupCalls: {}, groupNotices: [], reason: 'Подключаем звонки…', call: null, error: '', muted: false, needsAudio: false, remoteParticipants: [] });
+const audioDevicesIdle = () => ({ audioInputs: [], audioOutputs: [], devicesReady: false, audioDeviceBusy: false,
+  microphoneDeviceId: 'default', speakerDeviceId: 'default', canSelectAudioOutput: false, canChooseAudioOutput: false, deviceError: '' });
+const idle = () => ({ ...audioDevicesIdle(), ready: false, groupReady: false, groupCalls: {}, groupNotices: [], reason: 'Подключаем звонки…', call: null, error: '', muted: false, needsAudio: false, remoteParticipants: [] });
 
 // Tinode carries signalling; the same LiveKit room handles audio and camera tracks.
 export class CallController {
@@ -342,6 +344,7 @@ export class CallController {
           throw new Error('Этот звонок уже открыт на другом устройстве. Сначала выйдите из него там.');
         }
         if (canJoinGroup(status)) {
+          this.dismissGroupNotice(status.callId);
           Object.assign(call, { callId: status.callId, seq: status.seq, type: status.type,
             canEnd: status.canEnd === true });
           // Explicit rejoin is allowed after leaving or dismissing the same group call.
@@ -437,9 +440,10 @@ export class CallController {
       RoomEvent.TrackUnpublished, RoomEvent.LocalTrackPublished, RoomEvent.LocalTrackUnpublished,
       RoomEvent.TrackMuted, RoomEvent.TrackUnmuted, RoomEvent.ActiveSpeakersChanged,
       RoomEvent.ParticipantNameChanged]) room.on(event, syncVideo);
-    const devicesChanged = () => this.refreshCameras(room);
+    const devicesChanged = () => this.refreshDevices(room);
     navigator.mediaDevices?.addEventListener?.('devicechange', devicesChanged);
     this.removeDeviceListener = () => navigator.mediaDevices?.removeEventListener?.('devicechange', devicesChanged);
+    room.on(RoomEvent.ActiveDeviceChanged, devicesChanged);
     const markActive = () => {
       if (!current()) return;
       const hasAudio = [...room.remoteParticipants.values()].some((participant) =>
@@ -482,6 +486,8 @@ export class CallController {
     if (!current()) { await room.disconnect(); return; }
     await room.localParticipant.setMicrophoneEnabled(true, { echoCancellation: true, noiseSuppression: true });
     if (!current()) { await room.disconnect(); return; }
+    await this.refreshDevices(room);
+    if (!current()) { await room.disconnect(); return; }
     if (call.type === 'video') await this.setCamera(true);
     if (!current()) { await room.disconnect(); return; }
     syncVideo();
@@ -491,10 +497,52 @@ export class CallController {
   }
 
   async refreshCameras(room = this.room) {
+    return this.refreshDevices(room);
+  }
+
+  async refreshDevices(room = this.room) {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
-      if (this.room === room) this.update({ cameras: devices.filter((device) => device.kind === 'videoinput') });
-    } catch { /* Enumeration must not interrupt audio. */ }
+      if (this.room !== room || !room) return;
+      this.update({ cameras: devices.filter((device) => device.kind === 'videoinput'),
+        audioInputs: devices.filter((device) => device.kind === 'audioinput'),
+        audioOutputs: devices.filter((device) => device.kind === 'audiooutput'), devicesReady: true,
+        microphoneDeviceId: room.getActiveDevice?.('audioinput') || this.state.microphoneDeviceId,
+        speakerDeviceId: room.getActiveDevice?.('audiooutput') || this.state.speakerDeviceId,
+        canSelectAudioOutput: typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype,
+        canChooseAudioOutput: typeof navigator.mediaDevices.selectAudioOutput === 'function' });
+    } catch {
+      if (this.room === room && room) this.update({ deviceError: 'Не удалось получить список устройств. Звонок продолжается.' });
+    }
+  }
+
+  async switchAudioDevice(kind, deviceId, choose = false) {
+    const room = this.room;
+    if (!room || this.state.audioDeviceBusy || this.muting || !['audioinput', 'audiooutput'].includes(kind)) return;
+    const inputTrack = kind === 'audioinput' ? room.localParticipant.getTrackPublication?.('microphone')?.track : null;
+    this.update({ audioDeviceBusy: true, deviceError: '' });
+    try {
+      if (choose) {
+        // Must run directly from a user gesture; do not request output permission on connect.
+        const selected = await navigator.mediaDevices.selectAudioOutput();
+        deviceId = selected.deviceId;
+      }
+      if (this.room !== room) return;
+      if (!await room.switchActiveDevice(kind, deviceId)) throw new Error('Device switch failed');
+      if (this.room !== room) return;
+      this.update({ [kind === 'audioinput' ? 'microphoneDeviceId' : 'speakerDeviceId']: deviceId });
+      await this.refreshDevices(room);
+    } catch (error) {
+      if (this.room === room) this.update({ deviceError: error.name === 'NotAllowedError'
+        ? 'Нет разрешения на выбранное устройство. Текущий звук сохранён.'
+        : 'Не удалось переключить устройство. Проверьте подключение и попробуйте снова.' });
+    } finally {
+      if (this.room === room) this.update({ audioDeviceBusy: false });
+      else if (kind === 'audioinput') {
+        inputTrack?.stop();
+        room.localParticipant.getTrackPublication?.('microphone')?.track?.stop();
+      }
+    }
   }
 
   async setCamera(enabled) {
@@ -555,7 +603,7 @@ export class CallController {
   async toggleMicrophone() {
     const call = this.state.call;
     const room = this.room;
-    if (!room || !call || this.muting) return;
+    if (!room || !call || this.muting || this.state.audioDeviceBusy) return;
     this.muting = true;
     try {
       const muted = !this.state.muted;
@@ -634,7 +682,7 @@ export class CallController {
     this.audioElements.forEach((element) => element.remove());
     this.audioElements.clear();
     this.audioTracks.clear();
-    this.update({ needsAudio: false, cameraEnabled: false, cameraBusy: false, cameras: [], localVideo: null, remoteVideos: [], remoteParticipants: [] });
+    this.update({ ...audioDevicesIdle(), needsAudio: false, cameraEnabled: false, cameraBusy: false, cameras: [], localVideo: null, remoteVideos: [], remoteParticipants: [] });
   }
 
   finish(call) {

@@ -5,14 +5,20 @@ import { CallSounds } from './api/callSounds.js';
 import { CallScenery } from './CallScenery.jsx';
 import { VideoStage } from './calls/VideoStage.jsx';
 import { useCallFullscreen } from './calls/useCallFullscreen.js';
+import { CallAudioDevices } from './calls/CallAudioDevices.jsx';
+import { useBrowserCallNotifications } from './calls/useBrowserCallNotifications.js';
+import { canJoinGroup } from './api/groupCalls.js';
 
 export function useCalls(client) {
   const [state, setState] = useState({ ready: false, reason: 'Подключаем звонки…', call: null, error: '' });
   const controller = useRef(null);
   const sounds = useRef(null);
   const [soundBlocked, setSoundBlocked] = useState(false);
+  const browserNotifications = useBrowserCallNotifications(client);
+  const notice = state.groupNotices?.filter((item) => state.call?.topic !== item.topic && canJoinGroup(state.groupCalls?.[item.topic])).at(-1);
   const soundMode = state.call?.phase === 'incoming' ? 'incoming'
-    : state.call?.phase === 'outgoing' && !state.call.group ? 'outgoing' : null;
+    : state.call?.phase === 'outgoing' && !state.call.group ? 'outgoing' : notice ? 'notice' : null;
+  const soundKey = soundMode === 'notice' ? notice.callId : soundMode;
   const watchGroup = useCallback((chat) => controller.current?.watchGroup(chat), [client]);
   const refreshGroup = useCallback((chat) => controller.current?.refreshGroup(chat).catch(() => {}), [client]);
   useEffect(() => {
@@ -28,7 +34,7 @@ export function useCalls(client) {
       if (sounds.current === instance) sounds.current = null;
     };
   }, [client]);
-  useEffect(() => { sounds.current?.setMode(soundMode); }, [soundMode, client]);
+  useEffect(() => { sounds.current?.setMode(soundMode, soundKey); }, [soundMode, soundKey, client]);
   useEffect(() => {
     const instance = new CallController(client, { onChange: setState });
     controller.current = instance;
@@ -40,6 +46,7 @@ export function useCalls(client) {
   }, [client]);
   return {
     ...state,
+    ...browserNotifications,
     soundBlocked,
     enableCallSound: () => sounds.current?.unlock(),
     start: (chat, type) => controller.current?.start(chat, type),
@@ -53,6 +60,9 @@ export function useCalls(client) {
     },
     toggleCamera: () => controller.current?.toggleCamera(),
     switchCamera: () => controller.current?.switchCamera(),
+    refreshDevices: () => controller.current?.refreshDevices(),
+    switchAudioDevice: (kind, deviceId) => controller.current?.switchAudioDevice(kind, deviceId),
+    chooseAudioOutput: () => controller.current?.switchAudioDevice('audiooutput', '', true),
     accept: () => controller.current?.accept(),
     hangUp: () => controller.current?.hangUp(),
     endForAll: () => controller.current?.hangUp('end'),
@@ -127,7 +137,8 @@ export function CallPanel({ calls }) {
     }
     if (event.key === 'Escape' && !call) calls.dismissError();
     if (event.key !== 'Tab') return;
-    const buttons = [...panel.current.querySelectorAll('button:not(:disabled)')];
+    const buttons = [...panel.current.querySelectorAll('button:not(:disabled), select:not(:disabled), summary')]
+      .filter((element) => element.getClientRects().length > 0);
     const first = buttons[0];
     const last = buttons[buttons.length - 1];
     if (!first) { event.preventDefault(); return; }
@@ -201,6 +212,7 @@ export function CallPanel({ calls }) {
               </>}
               {['active', 'connecting', 'outgoing', 'reconnecting'].includes(call.phase) && <div className="call-control call-control-microphone">
                 <button className={`call-control-button ${calls.muted ? 'is-muted' : ''}`} type="button" aria-pressed={calls.muted}
+                  disabled={calls.audioDeviceBusy}
                   aria-label={calls.muted ? 'Включить микрофон' : 'Выключить микрофон'} onClick={calls.toggleMicrophone}>
                   <CallIcon name={calls.muted ? 'muted' : 'mic'} />
                 </button><span>{calls.muted ? 'Без микрофона' : 'Микрофон'}</span>
@@ -216,6 +228,7 @@ export function CallPanel({ calls }) {
                 <span>Ответить</span>
               </div>}
             </div>
+            {['active', 'connecting', 'outgoing', 'reconnecting'].includes(call.phase) && <CallAudioDevices calls={calls} />}
             {call.group && call.canEnd && call.accepted && !['ending', 'end-failed'].includes(call.phase) &&
               <button type="button" className="call-end-for-all" onClick={() => {
                 if (window.confirm('Завершить групповой звонок для всех участников?')) calls.endForAll();
