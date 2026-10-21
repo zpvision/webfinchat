@@ -1,7 +1,7 @@
 ﻿import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CallPanel, useCalls } from './Calls.jsx';
-import { GroupCallBanner, GroupCallBadge } from './calls/GroupCallBanner.jsx';
+import { GroupCallButton, GroupCallBadge } from './calls/GroupCallButton.jsx';
 import {
   FinchatRealtimeClient,
   createPdfViewUrl,
@@ -2483,6 +2483,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
             {!chat.isGroup && !calls.ready && <span className="call-availability">{calls.reason}</span>}
           </p>
         </button>
+        {chat.isGroup && <GroupCallButton chat={chat} calls={calls} members={displayMembers} />}
         {!chat.isGroup && chat.topic?.startsWith('usr') && <button className="call-start" type="button"
           disabled={!calls.ready || Boolean(calls.call)} onClick={() => calls.start(chat, 'video')}
           title={!calls.ready ? calls.reason : 'Видеозвонок'} aria-label="Видеозвонок">
@@ -2505,7 +2506,6 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
         )}
       </header>
 
-      {chat.isGroup && <GroupCallBanner chat={chat} calls={calls} members={displayMembers} />}
       {membersPanelOpen && chat.isGroup && (
         <aside className="group-members-panel" aria-label="Участники группы">
           <div className="group-members-header">
