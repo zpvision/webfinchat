@@ -62,6 +62,8 @@ function CallIcon({ name, ...props }) {
     {name === 'phone' && <path d="m7 3 3 5-2 2c1.4 2.8 3.2 4.6 6 6l2-2 5 3-1 4C10 22 2 14 3 4Z" />}
     {name === 'camera' && <><rect x="2" y="5" width="13" height="14" rx="3" /><path d="m15 10 7-4v12l-7-4" /></>}
     {name === 'switch' && <><path d="M3 8h16l-4-4M21 16H5l4 4" /></>}
+    {name === 'minimize' && <path d="M5 17h14" />}
+    {name === 'expand' && <path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5" />}
     {name === 'end' && <path d="M3 15v-4c5-5 13-5 18 0v4h-5v-3a12 12 0 0 0-8 0v3Z" />}
     {(name === 'mic' || name === 'muted') && <><rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4m-4 0h8" />{name === 'muted' && <path d="m3 3 18 18" strokeWidth="2.4" />}</>}
     {name === 'sound' && <><path d="m11 4-6 5H2v6h3l6 5ZM15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14" /></>}
@@ -74,9 +76,12 @@ export function CallPanel({ calls }) {
   const [, tick] = useState(0);
   const panel = useRef(null);
   const call = calls.call;
+  const [minimizedCall, setMinimizedCall] = useState(null);
+  const minimized = Boolean(call && minimizedCall === call);
   const visible = Boolean(call || calls.error);
+  const modal = visible && !minimized;
   useEffect(() => {
-    if (!visible) return;
+    if (!modal) return;
     const previousFocus = document.activeElement;
     const root = document.getElementById('root');
     const wasInert = root?.inert;
@@ -86,7 +91,7 @@ export function CallPanel({ calls }) {
       if (root) root.inert = wasInert;
       if (previousFocus?.isConnected) previousFocus.focus?.();
     };
-  }, [visible]);
+  }, [modal]);
   useEffect(() => {
     if (!call?.connectedAt) return;
     const timer = setInterval(() => tick((value) => value + 1), 1000);
@@ -97,6 +102,12 @@ export function CallPanel({ calls }) {
   const incoming = call?.phase === 'incoming';
   const initials = (call?.title || '?').trim().split(/\s+/).slice(0, 2).map((word) => Array.from(word)[0]).join('').toUpperCase();
   const trapFocus = (event) => {
+    if (minimized) return;
+    if (event.key === 'Escape' && call) {
+      event.preventDefault();
+      setMinimizedCall(call);
+      return;
+    }
     if (event.key === 'Escape' && !call) calls.dismissError();
     if (event.key !== 'Tab') return;
     const buttons = [...panel.current.querySelectorAll('button:not(:disabled)')];
@@ -110,11 +121,21 @@ export function CallPanel({ calls }) {
     }
   };
   return createPortal(
-    <div className="call-overlay">
-      <section className={`call-panel ${call ? '' : 'call-panel-message'} ${calls.localVideo || calls.remoteVideos?.length ? 'call-panel-video' : ''}`} role="dialog" aria-modal="true"
-        aria-labelledby="call-title" aria-describedby={call ? 'call-status' : 'call-error-text'}
+    <div className={`call-overlay ${minimized ? 'call-overlay-minimized' : ''}`}
+      onClick={(event) => { if (call && event.target === event.currentTarget) setMinimizedCall(call); }}>
+      <section className={`call-panel ${call ? '' : 'call-panel-message'} ${calls.localVideo || calls.remoteVideos?.length ? 'call-panel-video' : ''} ${minimized ? 'call-panel-minimized' : ''}`} role="dialog" aria-modal={minimized ? undefined : true}
+        aria-label={minimized ? `Звонок: ${call.title || 'Собеседник'}` : undefined}
+        aria-labelledby={minimized ? undefined : 'call-title'} aria-describedby={minimized ? undefined : call ? 'call-status' : 'call-error-text'}
         ref={panel} tabIndex={-1} onKeyDown={trapFocus}>
         {call && <>
+          <div className="call-window-actions">
+            <button type="button" className="call-window-button"
+              aria-label={minimized ? 'Развернуть звонок' : 'Свернуть звонок'}
+              title={minimized ? 'Развернуть звонок' : 'Свернуть звонок'}
+              onClick={() => setMinimizedCall(minimized ? null : call)}>
+              <CallIcon name={minimized ? 'expand' : 'minimize'} />
+            </button>
+          </div>
           <div className="call-artwork">
             <CallScenery />
             <div className="call-brand"><span className="call-brand-dot" /> FINCHAT <span>{call.type === 'video' || calls.cameraEnabled || calls.remoteVideos?.length ? 'ВИДЕОЗВОНОК' : 'АУДИОЗВОНОК'}</span></div>

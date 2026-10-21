@@ -2334,6 +2334,7 @@ html[data-theme="dark"] .pdf-modal-stage {
 }
 
 .call-panel {
+  position: relative;
   width: min(420px, 100%);
   max-height: calc(100dvh - 48px);
   overflow: auto;
@@ -2503,16 +2504,29 @@ html[data-theme="dark"] .pdf-modal-stage {
 
 .call-video-stage { position: absolute; inset: 0; z-index: 1; pointer-events: none; overflow: hidden; border-radius: inherit; }
 .call-remote-video { width: 100%; height: 100%; object-fit: contain; background: #14111c; }
-.call-local-video { position: absolute; right: 16px; top: 48px; width: 26%; max-width: 180px; aspect-ratio: 3 / 4; object-fit: cover; border: 2px solid #ffffff65; border-radius: 14px; background: #14111c; }
+.call-local-video { position: absolute; right: 16px; top: 48px; width: 26%; max-width: 180px; height: auto; max-height: calc(100% - 60px); object-fit: contain; border: 2px solid #ffffff65; border-radius: 14px; background: #14111c; }
 .call-panel-video { width: min(900px, 100%); }
 .call-panel-video .call-artwork { height: clamp(250px, 48dvh, 520px); }
 .call-panel-video .call-body { padding-top: 16px; }
 .call-panel-video .call-visualizer, .call-panel-video .call-hint, .call-panel-video .call-footer { display: none; }
 .call-panel-video .call-actions { gap: 22px; }
 .call-panel-video .call-brand { z-index: 2; }
+.call-window-actions { position: absolute; top: 10px; right: 10px; z-index: 4; }
+.call-window-button { display: grid; place-items: center; width: 36px; height: 36px; padding: 7px; border: 1px solid #ffffff40; border-radius: 10px; background: #201d35cc; color: #fff; cursor: pointer; }
+.call-window-button:hover { background: #40365b; }
+.call-window-button svg { width: 22px; height: 22px; }
+.call-panel .call-brand { right: 58px; }
+.call-overlay-minimized { inset: 16px 16px auto auto; display: block; width: min(320px, calc(100vw - 32px)); padding: 0; overflow: visible; background: transparent; backdrop-filter: none; }
+.call-panel-minimized { width: 100%; max-height: none; border-radius: 16px; overflow: hidden; }
+.call-panel-minimized .call-artwork { height: auto; aspect-ratio: 16 / 9; }
+.call-panel-minimized .call-body, .call-panel-minimized .call-brand, .call-panel-minimized .call-error { display: none; }
+.call-panel-minimized .call-artwork::after { display: none; }
+.call-panel-minimized .call-avatar-wrap { top: 50%; bottom: auto; transform: translate(-50%, -50%); }
+.call-panel-minimized .call-local-video { top: auto; bottom: 10px; right: 10px; width: 27%; max-height: 65%; border-radius: 8px; }
+.call-panel-minimized .call-video-stage-local-only .call-local-video { inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; border: none; border-radius: 0; }
 @media (max-width: 600px) {
   .call-panel-video .call-artwork { height: 44dvh; }
-  .call-panel-video .call-local-video { right: 10px; width: 25%; top: 44px; }
+  .call-panel-video:not(.call-panel-minimized) .call-local-video { right: 10px; width: 25%; top: 44px; }
   .call-actions { gap: 18px; }
   .call-panel-video .call-actions { gap: 14px; }
 }

@@ -16,7 +16,7 @@ function ParticipantVideo({ track, local = false, label }) {
 
 export function VideoStage({ localVideo, remoteVideos = [] }) {
   const remote = remoteVideos[0];
-  return <div className="call-video-stage">
+  return <div className={`call-video-stage ${remote ? '' : 'call-video-stage-local-only'}`}>
     {remote && <ParticipantVideo key={remote.identity} track={remote.track} label={remote.name || 'Видео собеседника'} />}
     {localVideo && <ParticipantVideo track={localVideo} local label="Ваша камера" />}
   </div>;
