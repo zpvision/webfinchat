@@ -2,6 +2,7 @@
 import { createPortal } from 'react-dom';
 import { CallPanel, useCalls } from './Calls.jsx';
 import { GroupCallButton, GroupCallBadge } from './calls/GroupCallButton.jsx';
+import { GroupCallNotifications } from './calls/GroupCallNotifications.jsx';
 import {
   FinchatRealtimeClient,
   createPdfViewUrl,
@@ -2992,6 +2993,7 @@ function MessengerScreen({ session, onLogout, onSessionExpired, theme, onToggleT
   return (
     <main className="messenger-page">
       <CallPanel calls={calls} />
+      <GroupCallNotifications calls={calls} chats={chats} />
       <aside className="chat-sidebar" aria-label="Список чатов">
         <div className="sidebar-header">
           <div className="sidebar-brand">

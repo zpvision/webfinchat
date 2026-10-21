@@ -573,3 +573,67 @@ test('group media keeps all participants when cameras are muted or one person le
   assert.equal(x.controller.state.remoteParticipants.length, 1);
   assert.equal(x.controller.state.call, call);
 });
+
+test('notify invite creates one nonblocking notice; dismissal sends no signaling', async (t) => {
+  const x = setupGroup(t);
+  await x.controller.initialize();
+  x.groupNotify('invite', 1, { ring: false, title: 'Team' });
+  x.groupNotify('invite', 1, { ring: false });
+  assert.equal(x.controller.state.groupNotices.length, 1);
+  assert.equal(x.controller.state.groupNotices[0].title, 'Team');
+  assert.equal(x.controller.state.call, null);
+  x.controller.dismissGroupNotice('call-1');
+  x.groupNotify('invite', 2, { ring: false });
+  assert.equal(x.controller.state.groupNotices.length, 0);
+  assert.equal(x.sent.length, 0);
+  assert.equal(canJoinGroup(x.controller.state.groupCalls.grpTeam), true);
+  x.groupNotify('invite', 1, { callId: 'new-call', ring: false });
+  assert.equal(x.controller.state.groupNotices[0].callId, 'new-call');
+});
+
+test('expired, ringing and self-started invites do not create floating notices', async (t) => {
+  const x = setupGroup(t);
+  await x.controller.initialize();
+  x.groupNotify('invite', 1, { ring: false, expiresAt: new Date(Date.now() - 1000).toISOString() });
+  assert.equal(x.controller.state.groupNotices.length, 0);
+  x.groupNotify('invite', 2, { ring: true });
+  await nextTurn();
+  assert.equal(x.controller.state.groupNotices.length, 0);
+  x.ack(x.sent[0].note.payload.requestId);
+  x.groupNotify('invite', 3, { ring: false });
+  assert.equal(x.controller.state.groupNotices.length, 0);
+});
+
+for (const event of ['ended', 'cancelled', 'left', 'declined', 'answered_elsewhere']) {
+  test('group notice is removed on ' + event, async (t) => {
+    const x = setupGroup(t);
+    await x.controller.initialize();
+    x.groupNotify('invite', 1, { ring: false });
+    assert.equal(x.controller.state.groupNotices.length, 1);
+    x.groupNotify(event, 2);
+    assert.equal(x.controller.state.groupNotices.length, 0);
+  });
+}
+
+test('authoritative idle status removes a notice even if ended notification was lost', async (t) => {
+  const x = setupGroup(t);
+  await x.controller.initialize();
+  x.groupNotify('invite', 1, { ring: false });
+  const refreshed = x.controller.refreshGroup({ topic: 'grpTeam' });
+  await nextTurn();
+  x.groupStatus(x.sent.at(-1).note.payload.requestId, { active: false, state: 'idle' }, 0);
+  await refreshed;
+  assert.equal(x.controller.state.groupNotices.length, 0);
+});
+
+test('joining a notification never silently joins a newer call in the same group', async (t) => {
+  const x = setupGroup(t);
+  await x.controller.initialize();
+  const joined = x.controller.joinGroup({ topic: 'grpTeam' }, 'old-call');
+  await nextTurn();
+  x.groupStatus(x.sent[0].note.payload.requestId, { callId: 'new-call' });
+  await joined;
+  assert.equal(x.media.length, 0);
+  assert.equal(x.sent.length, 1);
+  assert.equal(x.controller.state.call, null);
+});

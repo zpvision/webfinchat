@@ -2551,6 +2551,21 @@ html[data-theme="dark"] .pdf-modal-stage {
 .call-panel video::-webkit-media-controls { display: none !important; }
 
 .group-call-badge { display: inline-block; margin-left: 8px; font-size: 10px; font-weight: 500; color: #25885f; }
+.group-call-notifications { position: fixed; right: 24px; bottom: max(24px, env(safe-area-inset-bottom)); z-index: 900; display: flex; flex-direction: column; gap: 12px; width: min(360px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow-y: auto; pointer-events: none; }
+.group-call-notice { position: relative; display: flex; align-items: flex-start; gap: 12px; padding: 18px 42px 18px 18px; border: 1px solid var(--fc-line); border-radius: 18px; background: var(--fc-bg); color: var(--fc-text); box-shadow: 0 10px 40px #20153530; pointer-events: auto; }
+.group-call-notice-icon { display: grid; place-items: center; flex: 0 0 40px; height: 40px; border-radius: 12px; background: #8b6ad620; color: var(--fc-primary); }
+.group-call-notice-icon svg { width: 23px; height: 23px; }
+.group-call-notice-body { min-width: 0; }
+.group-call-notice-body strong { display: block; font-size: 14px; overflow-wrap: anywhere; }
+.group-call-notice-body p { margin: 5px 0 12px; font-size: 12px; color: var(--fc-muted); }
+.group-call-notice-body small { display: block; margin-top: 8px; font-size: 11px; color: var(--fc-muted); }
+.group-call-notice-join { min-height: 38px; padding: 7px 16px; border: 0; border-radius: 10px; background: linear-gradient(135deg, #8b6ad6, #6b54c7); color: white; font: inherit; font-size: 13px; cursor: pointer; }
+.group-call-notice-join:disabled { opacity: .5; cursor: not-allowed; }
+.group-call-notice-close { position: absolute; top: 10px; right: 10px; display: grid; place-items: center; width: 30px; height: 30px; padding: 6px; border: 0; border-radius: 8px; background: transparent; color: var(--fc-muted); cursor: pointer; }
+.group-call-notice-close svg { width: 18px; height: 18px; }
+.group-call-notice-close:hover { background: #8b6ad620; }
+.group-call-notice button:focus-visible { outline: 2px solid var(--fc-primary); outline-offset: 3px; }
+@media (max-width: 600px) { .group-call-notifications { right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); } }
 .call-end-for-all { margin-top: 14px; padding: 6px 12px; border: 1px solid #e86b7950; border-radius: 8px; background: transparent; color: #efabb3; font: inherit; font-size: 12px; cursor: pointer; }
 .call-group-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); grid-auto-rows: minmax(150px, 1fr); gap: 8px; padding: 48px 12px 12px; background: #14111c; overflow: auto; pointer-events: auto; }
 .call-group-grid-single { grid-template-columns: 1fr; }

@@ -1,7 +1,7 @@
 import { canJoinGroup, groupStatus } from './groupCalls.js';
 
 const REQUEST_TIMEOUT = 12000;
-const idle = () => ({ ready: false, groupReady: false, groupCalls: {}, reason: 'Подключаем звонки…', call: null, error: '', muted: false, needsAudio: false, remoteParticipants: [] });
+const idle = () => ({ ready: false, groupReady: false, groupCalls: {}, groupNotices: [], reason: 'Подключаем звонки…', call: null, error: '', muted: false, needsAudio: false, remoteParticipants: [] });
 
 // Tinode carries signalling; the same LiveKit room handles audio and camera tracks.
 export class CallController {
@@ -21,6 +21,7 @@ export class CallController {
     this.groupRequests = new Map();
     this.groupWatchers = new Map();
     this.groupRevisions = new Map();
+    this.dismissedGroupNotices = new Set();
   }
 
   update(patch) {
@@ -94,11 +95,30 @@ export class CallController {
     if (!topic?.startsWith('grp')) return;
     this.groupRevisions.set(topic, (this.groupRevisions.get(topic) || 0) + 1);
     const groupCalls = { ...this.state.groupCalls, [topic]: status };
-    this.update({ groupCalls });
+    const groupNotices = this.state.groupNotices.filter((notice) => {
+      if (notice.topic !== topic) return true;
+      return notice.callId === status.callId && canJoinGroup(status) && status.participation !== 'other-session';
+    });
+    this.update({ groupCalls, groupNotices });
     const call = this.state.call;
     if (call?.group && call.topic === topic && call.callId === status.callId) {
       this.updateCall(call, { canEnd: status.canEnd === true });
     }
+  }
+
+  showGroupNotice(status) {
+    if (!canJoinGroup(status) || this.dismissedGroupNotices.has(status.callId)
+      || this.closed.has(status.callId) || this.state.call?.topic === status.topic
+      || this.state.groupNotices.some((notice) => notice.callId === status.callId)) return;
+    this.update({ groupNotices: [...this.state.groupNotices, {
+      callId: status.callId, topic: status.topic, title: status.title,
+    }].slice(-5) });
+  }
+
+  dismissGroupNotice(callId) {
+    this.dismissedGroupNotices.add(callId);
+    if (this.dismissedGroupNotices.size > 500) this.dismissedGroupNotices.delete(this.dismissedGroupNotices.values().next().value);
+    this.update({ groupNotices: this.state.groupNotices.filter((notice) => notice.callId !== callId) });
   }
 
   refreshGroup(chat) {
@@ -147,8 +167,8 @@ export class CallController {
     };
   }
 
-  async joinGroup(chat) {
-    return this.start(chat, 'video', { joinOnly: true });
+  async joinGroup(chat, expectedCallId) {
+    return this.start(chat, 'video', { joinOnly: true, expectedCallId });
   }
 
   async joinGroupMedia(call) {
@@ -221,6 +241,9 @@ export class CallController {
         this.setGroupStatus(topic, { ...payload, topic, callId, seq: Number(payload.seq || info.seq),
           title: payload.title || topic, type: payload.audioOnly === false ? 'video' : 'audio',
           state: 'ringing', active: true, canEnd: false, error: '' });
+        if (payload.ring === false || (payload.ring !== true && this.state.groupNotifications !== 'ring')) {
+          this.showGroupNotice(this.state.groupCalls[topic]);
+        }
       } else if (event === 'ended' && (!previous || previous.callId === callId)) {
         this.setGroupStatus(topic, { ...previous, callId, active: false, state: 'idle' });
       } else if (['accepted', 'cancelled', 'declined', 'left'].includes(event)) {
@@ -247,6 +270,7 @@ export class CallController {
     if (call && !call.incoming && !call.callId && call.seq === info.seq
       && call.topic === (payload.topic || info.src || info.topic)) call.callId = callId;
     if (['cancelled', 'ended', 'declined', 'answered_elsewhere', 'left'].includes(event)) {
+      if (group) this.dismissGroupNotice(callId);
       // Closing a group invitation must not end an already accepted local participation.
       if (call?.group && call.callId === callId && call.accepted
         && ['declined', 'answered_elsewhere'].includes(event)) return;
@@ -304,7 +328,7 @@ export class CallController {
     stream.getTracks().forEach((track) => track.stop());
   }
 
-  async start(chat, type = 'audio', { joinOnly = false } = {}) {
+  async start(chat, type = 'audio', { joinOnly = false, expectedCallId } = {}) {
     const group = chat.topic?.startsWith('grp');
     if (!this.state.ready || this.state.call || (group ? !this.state.groupReady : !chat.topic?.startsWith('usr'))) return;
     const call = { group, participantNames: chat.participantNames, type: type === 'video' ? 'video' : 'audio', topic: chat.topic, title: chat.title, seq: 0, phase: 'preparing', incoming: false };
@@ -313,6 +337,7 @@ export class CallController {
       if (group) {
         const status = await this.refreshGroup(chat);
         if (this.state.call !== call) return;
+        if (expectedCallId && status.callId !== expectedCallId) throw new Error('Этот звонок уже завершился.');
         if (status.participation === 'other-session' && canJoinGroup(status)) {
           throw new Error('Этот звонок уже открыт на другом устройстве. Сначала выйдите из него там.');
         }

@@ -14,6 +14,7 @@ export function useCalls(client) {
   const soundMode = state.call?.phase === 'incoming' ? 'incoming'
     : state.call?.phase === 'outgoing' && !state.call.group ? 'outgoing' : null;
   const watchGroup = useCallback((chat) => controller.current?.watchGroup(chat), [client]);
+  const refreshGroup = useCallback((chat) => controller.current?.refreshGroup(chat).catch(() => {}), [client]);
   useEffect(() => {
     const instance = new CallSounds({ onBlocked: setSoundBlocked });
     sounds.current = instance;
@@ -43,7 +44,9 @@ export function useCalls(client) {
     enableCallSound: () => sounds.current?.unlock(),
     start: (chat, type) => controller.current?.start(chat, type),
     watchGroup,
-    joinGroup: (chat) => controller.current?.joinGroup(chat),
+    refreshGroup,
+    dismissGroupNotice: (callId) => controller.current?.dismissGroupNotice(callId),
+    joinGroup: (chat, callId) => controller.current?.joinGroup(chat, callId),
     showCall: () => {
       const instance = controller.current;
       if (instance?.state.call) instance.updateCall(instance.state.call, { focusVersion: (instance.state.call.focusVersion || 0) + 1 });
