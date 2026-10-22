@@ -28,6 +28,16 @@ async function startFixture(t, mode, apiKey = 'environment-test-key') {
     for await (const chunk of req) chunks.push(chunk);
     requests.push({ url: req.url, headers: req.headers, body: Buffer.concat(chunks) });
     const url = new URL(req.url, 'http://files.test');
+    if (url.pathname.startsWith('/v0/file/')) {
+      const secret = (req.headers['x-finchat-auth'] || '').split(' ')[1] || '';
+      // Match the HTTP auth decoder: unlike base64url, standard Base64 requires
+      // +/ and padding. Before normalization URL-safe sessions return malformed.
+      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(secret) || secret.length % 4 !== 0) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ctrl: { code: 400, text: 'malformed' } }));
+        return;
+      }
+    }
     if (url.pathname === '/v0/file/u') {
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ ctrl: { code: 200, params: {
@@ -93,7 +103,7 @@ async function startFixture(t, mode, apiKey = 'environment-test-key') {
     child.once('exit', (code) => { clearTimeout(timeout); reject(new Error(`Server exited ${code}: ${output}`)); });
   });
   // node:http catches truncated framing independently of fetch's decompression.
-  const download = (name, headers = { 'X-Finchat-Token': 'test-user-token' }) => new Promise((resolveResponse, reject) => {
+  const download = (name, headers = { 'X-Finchat-Token': 'dGVzdC11c2VyLXRva2Vu' }) => new Promise((resolveResponse, reject) => {
     const req = get(`${base}/file-download-proxy?ref=${name}`, { headers }, (res) => {
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
@@ -118,7 +128,7 @@ for (const mode of ['production', 'development']) {
         assert.equal(result.headers['content-encoding'], undefined);
         const last = requests.at(-1);
         assert.equal(last.headers['x-finchat-apikey'], 'environment-test-key');
-        assert.equal(last.headers['x-finchat-auth'], 'Token test-user-token');
+        assert.equal(last.headers['x-finchat-auth'], 'Token dGVzdC11c2VyLXRva2Vu');
       });
     }
     await t.test('missing authentication never fetches upstream', async () => {
@@ -133,7 +143,7 @@ for (const mode of ['production', 'development']) {
     });
     await t.test('compressed PDF preview uses actual byte count', async () => {
       const ticket = await fetch(`${base}/pdf-view-proxy`, { method: 'POST',
-        headers: { 'X-Finchat-Token': 'test-user-token', 'Content-Type': 'application/json' },
+        headers: { 'X-Finchat-Token': 'dGVzdC11c2VyLXRva2Vu', 'Content-Type': 'application/json' },
         body: JSON.stringify({ ref: 'pdf-gzip', name: 'test.pdf' }),
       });
       assert.equal(ticket.status, 200);
@@ -145,12 +155,58 @@ for (const mode of ['production', 'development']) {
     });
     await t.test('upload length equals original binary bytes', async () => {
       const result = await fetch(`${base}/file-upload-proxy`, { method: 'POST',
-        headers: { 'X-Finchat-Token': 'test-user-token' }, body: contents.tiny,
+        headers: { 'X-Finchat-Token': 'dGVzdC11c2VyLXRva2Vu' }, body: contents.tiny,
       });
       assert.equal(result.status, 200);
       const upload = requests.find((req) => req.url === '/upload');
       assert.deepEqual(upload.body, contents.tiny);
       assert.equal(Number(upload.headers['content-length']), contents.tiny.length);
+    });
+    await t.test('presign receives server API key, user token and extension; storage receives no credentials', async () => {
+      const result = await fetch(`${base}/file-upload-proxy`, { method: 'POST',
+        headers: { 'X-Finchat-Token': 'dGVzdC11c2VyLXRva2Vu', 'X-File-Ext': 'pdf', 'X-File-Mime': 'application/pdf' },
+        body: contents.tiny,
+      });
+      assert.equal(result.status, 200);
+      const presign = requests.findLast((req) => req.url.startsWith('/v0/file/u'));
+      const query = new URL(presign.url, 'http://files.test').searchParams;
+      assert.equal(query.get('direct'), 'true');
+      assert.equal(query.get('ext'), 'pdf');
+      assert.equal(query.has('mime'), false);
+      assert.equal(presign.headers['x-finchat-apikey'], 'environment-test-key');
+      assert.equal(presign.headers['x-finchat-auth'], 'Token dGVzdC11c2VyLXRva2Vu');
+      const storage = requests.findLast((req) => req.url === '/upload');
+      assert.equal(storage.headers['x-finchat-apikey'], undefined);
+      assert.equal(storage.headers['x-finchat-auth'], undefined);
+    });
+    await t.test('base64url and unpadded session tokens upload with standard Base64 HTTP auth', async () => {
+      const standard = Buffer.alloc(64, 255).toString('base64');
+      for (const token of [Buffer.alloc(64, 255).toString('base64url'), standard.replace(/=+$/, '')]) {
+        const result = await fetch(`${base}/file-upload-proxy`, { method: 'POST',
+          headers: { 'X-Finchat-Token': token, 'X-File-Mime': 'application/octet-stream' }, body: contents.tiny,
+        });
+        assert.equal(result.status, 200, await result.text());
+        const presign = requests.findLast((req) => req.url.startsWith('/v0/file/u'));
+        assert.equal(presign.headers['x-finchat-auth'], `Token ${standard}`);
+        assert.equal(presign.headers['x-finchat-apikey'], 'environment-test-key');
+        assert.equal(new URL(presign.url, 'http://files.test').searchParams.get('mime'), 'application/octet-stream');
+      }
+    });
+    await t.test('download and PDF proxy normalize the same session token', async () => {
+      const token = Buffer.alloc(64, 255).toString('base64url');
+      const standard = Buffer.alloc(64, 255).toString('base64');
+      assert.equal((await download('plain', { 'X-Finchat-Token': token })).status, 200);
+      assert.equal(requests.at(-1).headers['x-finchat-auth'], `Token ${standard}`);
+      assert.equal(new URL(requests.at(-1).url, 'http://files.test').searchParams.get('secret'), standard);
+      const ticket = await fetch(`${base}/pdf-view-proxy`, { method: 'POST',
+        headers: { 'X-Finchat-Token': token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ref: 'pdf-gzip' }),
+      });
+      assert.equal(ticket.status, 200);
+      const pdf = await fetch(base + (await ticket.json()).url);
+      assert.equal(pdf.status, 200);
+      await pdf.arrayBuffer();
+      assert.equal(requests.at(-1).headers['x-finchat-auth'], `Token ${standard}`);
     });
     await t.test('configured size limit checks plain and decompressed bytes', async () => {
       assert.equal((await download('large')).status, 413);

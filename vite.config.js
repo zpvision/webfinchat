@@ -2,6 +2,7 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { randomUUID } from 'node:crypto';
 import tls from 'node:tls';
+import { normalizeHttpToken } from './server/finchatHttpAuth.mjs';
 
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_DOWNLOAD_BYTES = MAX_FILE_BYTES;
@@ -200,7 +201,7 @@ function fileProxyPlugin(env) {
         }
 
         try {
-          const token = singleHeader(request.headers['x-finchat-token']);
+          const token = normalizeHttpToken(singleHeader(request.headers['x-finchat-token']));
           const mime = singleHeader(request.headers['x-file-mime']) || 'application/octet-stream';
           const extension = singleHeader(request.headers['x-file-ext']) || '';
           const declaredLength = Number(singleHeader(request.headers['content-length']) || 0);
@@ -303,7 +304,7 @@ function fileProxyPlugin(env) {
 
         if (request.method === 'POST') {
           try {
-            const token = singleHeader(request.headers['x-finchat-token']);
+            const token = normalizeHttpToken(singleHeader(request.headers['x-finchat-token']));
 
             if (!token) {
               response.statusCode = 401;
@@ -417,7 +418,7 @@ function fileProxyPlugin(env) {
         }
 
         try {
-          const token = singleHeader(request.headers['x-finchat-token']);
+          const token = normalizeHttpToken(singleHeader(request.headers['x-finchat-token']));
           const requestUrl = new URL(request.url || '', 'http://localhost');
           const ref = requestUrl.searchParams.get('ref') || '';
           const normalizedRef = normalizeFileRef(ref, finchatHost);
