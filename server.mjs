@@ -27,7 +27,7 @@ function loadDotEnv() {
     const key = trimmed.slice(0, separator).trim();
     const value = trimmed.slice(separator + 1).trim().replace(/^["']|["']$/g, '');
 
-    if (process.env[key] === undefined) {
+    if (!process.env[key]) {
       process.env[key] = value;
     }
   }

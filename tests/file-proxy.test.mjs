@@ -185,9 +185,9 @@ for (const mode of ['production', 'development']) {
   });
 }
 
-test('explicitly empty runtime API key is not overwritten by .env', async (t) => {
+test('empty runtime API key falls back to .env as before the configuration change', async (t) => {
   const { download, requests } = await startFixture(t, 'production', '');
   assert.equal((await download('tiny')).status, 200);
-  assert.equal(requests.at(-1).headers['x-finchat-apikey'], undefined);
-  assert.equal(new URL(requests.at(-1).url, 'http://files.test').searchParams.has('apikey'), false);
+  assert.equal(requests.at(-1).headers['x-finchat-apikey'], 'file-must-not-override-environment');
+  assert.equal(new URL(requests.at(-1).url, 'http://files.test').searchParams.get('apikey'), 'file-must-not-override-environment');
 });

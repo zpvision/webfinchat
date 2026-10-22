@@ -563,9 +563,8 @@ function fileProxyPlugin(env) {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  // Direct browser connections are opt-in. Server credentials stay in the proxy.
-  const finchatHost = env.VITE_FINCHAT_HOST || '';
-  const finchatApiKey = env.VITE_FINCHAT_API_KEY || '';
+  const finchatHost = env.VITE_FINCHAT_HOST || env.FINCHAT_HOST || 'api.dev.finchat.club';
+  const finchatApiKey = env.VITE_FINCHAT_API_KEY || env.FINCHAT_API_KEY || '';
 
   return {
     define: {

@@ -18,17 +18,16 @@ async function readDefines(t, values) {
   ], { cwd, env, encoding: 'utf8', windowsHide: true }));
 }
 
-test('default build uses existing same-origin proxy', async (t) => {
+test('default build retains the original direct DEV host', async (t) => {
   const defines = await readDefines(t, {});
-  assert.equal(JSON.parse(defines.__FINCHAT_HOST__), '');
+  assert.equal(JSON.parse(defines.__FINCHAT_HOST__), 'api.dev.finchat.club');
   assert.equal(JSON.parse(defines.__FINCHAT_API_KEY__), '');
 });
 
-test('server host and secret never fall through into browser defines', async (t) => {
+test('build retains original FINCHAT_HOST and FINCHAT_API_KEY fallback', async (t) => {
   const defines = await readDefines(t, { FINCHAT_HOST: 'private-backend.test', FINCHAT_API_KEY: 'server-only-test-marker' });
-  assert.equal(JSON.parse(defines.__FINCHAT_HOST__), '');
-  assert.equal(JSON.parse(defines.__FINCHAT_API_KEY__), '');
-  assert.ok(!JSON.stringify(defines).includes('server-only-test-marker'));
+  assert.equal(JSON.parse(defines.__FINCHAT_HOST__), 'private-backend.test');
+  assert.equal(JSON.parse(defines.__FINCHAT_API_KEY__), 'server-only-test-marker');
 });
 
 test('explicit public VITE variables retain direct browser connection', async (t) => {
