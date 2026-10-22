@@ -2,6 +2,7 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { randomUUID } from 'node:crypto';
 import tls from 'node:tls';
+import { createUploadDiagnostics } from './server/uploadDiagnostics.mjs';
 
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_DOWNLOAD_BYTES = MAX_FILE_BYTES;
@@ -193,6 +194,7 @@ function fileProxyPlugin(env) {
     name: 'file-proxy',
     configureServer(server) {
       server.middlewares.use('/file-upload-proxy', async (request, response) => {
+        const diagnostics = createUploadDiagnostics(response, { backend: finchatHost, apiKeyConfigured: Boolean(apiKey) });
         if (request.method !== 'POST') {
           response.statusCode = 405;
           response.end('Method not allowed');
@@ -229,6 +231,7 @@ function fileProxyPlugin(env) {
             presignUrl.searchParams.set('mime', mime);
           }
 
+          diagnostics.setStage('presign');
           const presignResponse = await fetch(presignUrl, {
             method: 'POST',
             headers: {
@@ -239,6 +242,7 @@ function fileProxyPlugin(env) {
           const presignText = await presignResponse.text();
 
           if (!presignResponse.ok) {
+            diagnostics.failure(presignResponse.status, presignText);
             response.statusCode = presignResponse.status;
             response.end(presignText);
             return;
@@ -254,6 +258,7 @@ function fileProxyPlugin(env) {
             !params?.content_type ||
             !params?.cache_control
           ) {
+            diagnostics.failure(502, presignText);
             response.statusCode = 502;
             response.end(presignText);
             return;
@@ -267,6 +272,7 @@ function fileProxyPlugin(env) {
             return;
           }
 
+          diagnostics.setStage('storage');
           const uploadResponse = await fetch(params.upload_url, {
             method: params.upload_method || 'PUT',
             headers: {
@@ -279,11 +285,13 @@ function fileProxyPlugin(env) {
           const uploadText = await uploadResponse.text();
 
           if (!uploadResponse.ok) {
+            diagnostics.failure(uploadResponse.status, uploadText);
             response.statusCode = uploadResponse.status;
             response.end(uploadText);
             return;
           }
 
+          diagnostics.setStage('complete');
           response.setHeader('Content-Type', 'application/json');
           response.end(
             JSON.stringify({

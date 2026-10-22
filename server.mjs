@@ -3,6 +3,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import tls from 'node:tls';
+import { createUploadDiagnostics } from './server/uploadDiagnostics.mjs';
 
 function loadDotEnv() {
   if (!existsSync('.env')) {
@@ -388,6 +389,7 @@ async function handlePdfView(request, response) {
 }
 
 async function handleUpload(request, response) {
+  const diagnostics = createUploadDiagnostics(response, { backend: FINCHAT_HOST, apiKeyConfigured: Boolean(FINCHAT_API_KEY) });
   if (request.method !== 'POST') {
     send(response, 405, 'Method not allowed');
     return;
@@ -419,6 +421,7 @@ async function handleUpload(request, response) {
     presignUrl.searchParams.set('mime', mime);
   }
 
+  diagnostics.setStage('presign');
   const presignResponse = await fetch(presignUrl, {
     method: 'POST',
     headers: {
@@ -429,6 +432,7 @@ async function handleUpload(request, response) {
   const presignText = await presignResponse.text();
 
   if (!presignResponse.ok) {
+    diagnostics.failure(presignResponse.status, presignText);
     send(response, presignResponse.status, presignText);
     return;
   }
@@ -443,6 +447,7 @@ async function handleUpload(request, response) {
     !params?.content_type ||
     !params?.cache_control
   ) {
+    diagnostics.failure(502, presignText);
     send(response, 502, presignText);
     return;
   }
@@ -454,6 +459,7 @@ async function handleUpload(request, response) {
     return;
   }
 
+  diagnostics.setStage('storage');
   const uploadResponse = await fetch(params.upload_url, {
     method: params.upload_method || 'PUT',
     headers: {
@@ -466,10 +472,12 @@ async function handleUpload(request, response) {
   const uploadText = await uploadResponse.text();
 
   if (!uploadResponse.ok) {
+    diagnostics.failure(uploadResponse.status, uploadText);
     send(response, uploadResponse.status, uploadText);
     return;
   }
 
+  diagnostics.setStage('complete');
   send(
     response,
     200,

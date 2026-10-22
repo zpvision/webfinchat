@@ -30,13 +30,19 @@ async function startFixture(t, mode, apiKey = 'environment-test-key') {
     const url = new URL(req.url, 'http://files.test');
     if (url.pathname === '/v0/file/u') {
       res.setHeader('Content-Type', 'application/json');
+      if (url.searchParams.get('ext') === 'reject') {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ctrl: { code: 400, text: 'malformed' } }));
+        return;
+      }
       res.end(JSON.stringify({ ctrl: { code: 200, params: {
-        upload_url: 'https://files.test/upload', url: '/v0/file/s/new',
+        upload_url: url.searchParams.get('ext') === 'storagefail' ? 'https://files.test/upload-reject' : 'https://files.test/upload', url: '/v0/file/s/new',
         content_type: 'application/octet-stream', cache_control: 'private',
       } } }));
       return;
     }
     if (url.pathname === '/upload') { res.end(''); return; }
+    if (url.pathname === '/upload-reject') { res.statusCode = 403; res.end('<Error>AccessDenied</Error>'); return; }
     const [name, encoding] = url.pathname.split('/').at(-1).split('-');
     const body = contents[name] ?? contents.plain;
     if (name === 'error') res.statusCode = 403;
@@ -148,9 +154,24 @@ for (const mode of ['production', 'development']) {
         headers: { 'X-Finchat-Token': 'test-user-token' }, body: contents.tiny,
       });
       assert.equal(result.status, 200);
+      assert.equal(result.headers.get('X-Finchat-Upload-Stage'), 'complete');
       const upload = requests.find((req) => req.url === '/upload');
       assert.deepEqual(upload.body, contents.tiny);
       assert.equal(Number(upload.headers['content-length']), contents.tiny.length);
+    });
+    await t.test('failed presign is distinguished from storage rejection without retrying the file', async () => {
+      for (const [ext, expectedStage, status] of [['reject', 'presign', 400], ['storagefail', 'storage', 403]]) {
+        const before = requests.filter((req) => req.url === '/upload' || req.url === '/upload-reject').length;
+        const result = await fetch(`${base}/file-upload-proxy`, { method: 'POST',
+          headers: { 'X-Finchat-Token': 'test-user-token', 'X-File-Ext': ext }, body: contents.tiny,
+        });
+        assert.equal(result.status, status);
+        assert.equal(result.headers.get('X-Finchat-Upload-Stage'), expectedStage);
+        assert.match(result.headers.get('X-Finchat-Upload-Request-Id'), /^[0-9a-f-]{36}$/);
+        await result.text();
+        const after = requests.filter((req) => req.url === '/upload' || req.url === '/upload-reject').length;
+        assert.equal(after - before, expectedStage === 'storage' ? 1 : 0);
+      }
     });
     await t.test('configured size limit checks plain and decompressed bytes', async () => {
       assert.equal((await download('large')).status, 413);

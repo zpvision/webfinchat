@@ -95,6 +95,13 @@ LiveKit или другие серверные секреты. Совмести�
 
 ## Проверки
 
+При ошибке отправки файла HTTP-прокси возвращает `X-Finchat-Upload-Stage`
+(`request`, `presign`, `storage`, `complete`) и `X-Finchat-Upload-Request-Id`.
+Ошибка в интерфейсе содержит понятное название этапа и код диагностики.
+В логах Node.js/Vite строка `[finchat-upload]` связывает код с HTTP-статусом,
+хостом backend и наличием API-ключа, без ключей, токенов, подписанных URL и тела ответа.
+Порядок разбора: [docs/upload-troubleshooting.md](docs/upload-troubleshooting.md).
+
 - `npm test`: существующие тесты сообщений/очереди и звонков, а также HTTP-интеграция
   реальных production/DEV file-прокси с локальным backend: gzip/Brotli/deflate,
   пустое тело, chunked, PDF, ошибки, ограничения размера и upload; WebSocket forwarding;
