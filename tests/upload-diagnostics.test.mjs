@@ -19,7 +19,7 @@ test('upload failure log contains stage and status without request/response cred
   assert.ok(!logs[0].includes('upload_url'));
 });
 
-for (const stage of ['presign', 'storage']) test(`client identifies ${stage} error and exposes safe diagnostic code`, async (t) => {
+for (const stage of ['presign', 'storage', 'multipart']) test(`client identifies ${stage} error and exposes safe diagnostic code`, async (t) => {
   t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ ctrl: { code: 400, text: 'malformed' } }), {
     status: 400, headers: { 'X-Finchat-Upload-Stage': stage, 'X-Finchat-Upload-Request-Id': 'test-request-id' },
   }));

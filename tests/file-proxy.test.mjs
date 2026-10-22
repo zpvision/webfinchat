@@ -8,6 +8,7 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { gzipSync, deflateSync, brotliCompressSync } from 'node:zlib';
+import { FinchatRealtimeClient, uploadAttachmentFile } from '../src/api/finchat.js';
 
 const root = resolve('.');
 const contents = {
@@ -30,7 +31,26 @@ async function startFixture(t, mode, apiKey = 'environment-test-key') {
     const url = new URL(req.url, 'http://files.test');
     if (url.pathname === '/v0/file/u') {
       res.setHeader('Content-Type', 'application/json');
-      if (url.searchParams.get('ext') === 'reject') {
+      if (url.searchParams.get('direct') !== 'true') {
+        const form = await new Response(Buffer.concat(chunks), { headers: { 'Content-Type': req.headers['content-type'] } }).formData();
+        const file = form.get('file');
+        assert.ok(file instanceof File);
+        requests.at(-1).multipartFile = { bytes: Buffer.from(await file.arrayBuffer()), type: file.type, name: file.name };
+        if (file.name.endsWith('.reject')) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ ctrl: { code: 400, text: 'malformed' } }));
+          return;
+        }
+        res.end(JSON.stringify({ ctrl: { code: 200, params: { url: '/v0/file/s/multipart', content_type: file.type } } }));
+        return;
+      }
+      const ext = url.searchParams.get('ext');
+      if (/^http(401|403|413|500)$/.test(ext || '') || ext === 'badrequest') {
+        res.statusCode = ext === 'badrequest' ? 400 : Number(ext.slice(4));
+        res.end(JSON.stringify({ ctrl: { code: res.statusCode, text: 'rejected' } }));
+        return;
+      }
+      if (['reject', 'legacy'].includes(ext) || url.searchParams.get('mime') === 'application/x-test-multipart') {
         res.statusCode = 400;
         res.end(JSON.stringify({ ctrl: { code: 400, text: 'malformed' } }));
         return;
@@ -158,9 +178,12 @@ for (const mode of ['production', 'development']) {
       const upload = requests.find((req) => req.url === '/upload');
       assert.deepEqual(upload.body, contents.tiny);
       assert.equal(Number(upload.headers['content-length']), contents.tiny.length);
+      assert.equal(upload.headers['x-finchat-apikey'], undefined);
+      assert.equal(upload.headers['x-finchat-auth'], undefined);
     });
-    await t.test('failed presign is distinguished from storage rejection without retrying the file', async () => {
-      for (const [ext, expectedStage, status] of [['reject', 'presign', 400], ['storagefail', 'storage', 403]]) {
+    await t.test('multipart refusal and storage rejection do not create upload retry loops', async () => {
+      for (const [ext, expectedStage, status] of [['reject', 'multipart', 400], ['storagefail', 'storage', 403]]) {
+        const beforeRequests = requests.length;
         const before = requests.filter((req) => req.url === '/upload' || req.url === '/upload-reject').length;
         const result = await fetch(`${base}/file-upload-proxy`, { method: 'POST',
           headers: { 'X-Finchat-Token': 'test-user-token', 'X-File-Ext': ext }, body: contents.tiny,
@@ -171,7 +194,80 @@ for (const mode of ['production', 'development']) {
         await result.text();
         const after = requests.filter((req) => req.url === '/upload' || req.url === '/upload-reject').length;
         assert.equal(after - before, expectedStage === 'storage' ? 1 : 0);
+        assert.equal(requests.length - beforeRequests, 2);
       }
+    });
+    await t.test('malformed presign falls back once with exact file bytes, MIME and original FinChat credentials', async () => {
+      const before = requests.length;
+      const result = await fetch(`${base}/file-upload-proxy`, { method: 'POST',
+        headers: { 'X-Finchat-Token': 'test-user-token', 'X-File-Ext': 'legacy', 'X-File-Mime': 'application/pdf' }, body: contents.pdf,
+      });
+      assert.equal(result.status, 200);
+      assert.equal(result.headers.get('X-Finchat-Upload-Mode'), 'multipart');
+      assert.equal(result.headers.get('X-Finchat-Upload-Stage'), 'complete');
+      assert.equal((await result.json()).url, '/v0/file/s/multipart');
+      assert.equal(requests.length - before, 2);
+      const upload = requests.at(-1);
+      assert.equal(upload.url, '/v0/file/u');
+      assert.match(upload.headers['content-type'], /^multipart\/form-data; boundary=/);
+      assert.deepEqual(upload.multipartFile.bytes, contents.pdf);
+      assert.equal(upload.multipartFile.type, 'application/pdf');
+      assert.equal(upload.headers['x-finchat-apikey'], 'environment-test-key');
+      assert.equal(upload.headers['x-finchat-auth'], 'Token test-user-token');
+    });
+    await t.test('file without extension uses the same multipart fallback', async () => {
+      const result = await fetch(`${base}/file-upload-proxy`, { method: 'POST',
+        headers: { 'X-Finchat-Token': 'test-user-token', 'X-File-Mime': 'application/x-test-multipart' }, body: contents.tiny,
+      });
+      assert.equal(result.status, 200);
+      await result.json();
+      assert.deepEqual(requests.at(-1).multipartFile.bytes, contents.tiny);
+      assert.equal(requests.at(-1).multipartFile.name, 'attachment');
+    });
+    await t.test('authentication, size and other presign errors never send a multipart body', async () => {
+      for (const ext of ['http401', 'http403', 'http413', 'http500', 'badrequest']) {
+        const before = requests.length;
+        const result = await fetch(`${base}/file-upload-proxy`, { method: 'POST',
+          headers: { 'X-Finchat-Token': 'test-user-token', 'X-File-Ext': ext }, body: contents.tiny,
+        });
+        assert.equal(result.status, ext === 'badrequest' ? 400 : Number(ext.slice(4)));
+        assert.equal(result.headers.get('X-Finchat-Upload-Stage'), 'presign');
+        await result.text();
+        assert.equal(requests.length - before, 1);
+      }
+    });
+    await t.test('actual frontend upload returns the saved attachment reference after multipart fallback', async (t) => {
+      const nativeFetch = globalThis.fetch;
+      t.mock.method(globalThis, 'fetch', (url, options) => {
+        assert.equal(url, '/file-upload-proxy');
+        return nativeFetch(base + url, options);
+      });
+      const uploaded = await uploadAttachmentFile({ token: 'test-user-token', file: new File([contents.pdf], 'report.legacy', { type: 'application/pdf' }) });
+      assert.equal(uploaded.ref, '/v0/file/s/multipart');
+      assert.equal(uploaded.name, 'report.legacy');
+      assert.equal(uploaded.mime, 'application/pdf');
+      assert.equal(uploaded.size, contents.pdf.length);
+    });
+    await t.test('saved multipart file is published with the existing message and extra.attachments contract', async (t) => {
+      const nativeFetch = globalThis.fetch;
+      t.mock.method(globalThis, 'fetch', (url, options) => nativeFetch(base + url, options));
+      const previousWindow = globalThis.window;
+      globalThis.window = { location: { origin: base } };
+      t.after(() => { if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow; });
+      const client = new FinchatRealtimeClient('test-user-token');
+      client.ensureAttached = async () => {};
+      let publication;
+      client.publish = async (topic, packet) => {
+        publication = { topic, packet };
+        return { ctrl: { code: 200, params: { seq: 42, user: 'usrMe' }, ts: new Date().toISOString() } };
+      };
+      const message = await client.sendFiles({ topic: 'usrPeer', files: [new File([contents.pdf], 'report.legacy', { type: 'application/pdf' })], text: 'Document' });
+      assert.equal(publication.topic, 'usrPeer');
+      assert.deepEqual(publication.packet.extra.attachments, ['/v0/file/s/multipart']);
+      assert.equal(publication.packet.payload.content.ent[0].data.ref, '/v0/file/s/multipart');
+      assert.equal(message.attachments[0].ref, '/v0/file/s/multipart');
+      assert.equal(message.attachments[0].name, 'report.legacy');
+      assert.equal(message.seq, 42);
     });
     await t.test('configured size limit checks plain and decompressed bytes', async () => {
       assert.equal((await download('large')).status, 413);

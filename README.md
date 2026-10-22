@@ -96,11 +96,18 @@ LiveKit или другие серверные секреты. Совмести�
 ## Проверки
 
 При ошибке отправки файла HTTP-прокси возвращает `X-Finchat-Upload-Stage`
-(`request`, `presign`, `storage`, `complete`) и `X-Finchat-Upload-Request-Id`.
+(`request`, `presign`, `storage`, `multipart`, `complete`) и `X-Finchat-Upload-Request-Id`.
 Ошибка в интерфейсе содержит понятное название этапа и код диагностики.
 В логах Node.js/Vite строка `[finchat-upload]` связывает код с HTTP-статусом,
 хостом backend и наличием API-ключа, без ключей, токенов, подписанных URL и тела ответа.
 Порядок разбора: [docs/upload-troubleshooting.md](docs/upload-troubleshooting.md).
+
+Если подготовка direct upload возвращает HTTP 400 с `ctrl.code=400` и
+`ctrl.text=malformed`, прокси один раз пробует стандартный Tinode multipart upload
+в тот же backend. При этом ответ содержит `X-Finchat-Upload-Mode: multipart`.
+Работающий direct upload, API-ключ и представление пользовательского токена сохранены.
+На отказ авторизации, лимит размера, другой ответ 400 или ошибку storage эта попытка
+не выполняется. Multipart-ошибка также не запускает повторов.
 
 - `npm test`: существующие тесты сообщений/очереди и звонков, а также HTTP-интеграция
   реальных production/DEV file-прокси с локальным backend: gzip/Brotli/deflate,

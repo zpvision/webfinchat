@@ -4,6 +4,7 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import tls from 'node:tls';
 import { createUploadDiagnostics } from './server/uploadDiagnostics.mjs';
+import { tryMultipartUpload } from './server/multipartUpload.mjs';
 
 function loadDotEnv() {
   if (!existsSync('.env')) {
@@ -432,6 +433,13 @@ async function handleUpload(request, response) {
   const presignText = await presignResponse.text();
 
   if (!presignResponse.ok) {
+    const fallback = await tryMultipartUpload({ presignStatus: presignResponse.status, presignBody: presignText,
+      host: FINCHAT_HOST, apiKey: FINCHAT_API_KEY, token, mime, extension, fileBody, diagnostics });
+    if (fallback) {
+      response.setHeader('X-Finchat-Upload-Mode', 'multipart');
+      send(response, fallback.status, fallback.body, fallback.contentType);
+      return;
+    }
     diagnostics.failure(presignResponse.status, presignText);
     send(response, presignResponse.status, presignText);
     return;

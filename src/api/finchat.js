@@ -356,7 +356,8 @@ export async function uploadAttachmentFile({ token, file }) {
     const stage = uploadResponse.headers.get('X-Finchat-Upload-Stage');
     const requestId = uploadResponse.headers.get('X-Finchat-Upload-Request-Id');
     const label = stage === 'presign' ? 'Не удалось подготовить загрузку файла'
-      : stage === 'storage' ? 'Не удалось отправить файл в хранилище' : 'Не удалось загрузить файл';
+      : stage === 'storage' ? 'Не удалось отправить файл в хранилище'
+        : stage === 'multipart' ? 'Не удалось загрузить файл через сервер' : 'Не удалось загрузить файл';
     const detail = ctrl?.text ? `: ${String(ctrl.text).slice(0, 160)}` : '';
     const error = new Error(`${label} (HTTP ${uploadResponse.status}${detail}).${requestId ? ` Код диагностики: ${requestId}` : ''}`);
 

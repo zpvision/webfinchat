@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import { randomUUID } from 'node:crypto';
 import tls from 'node:tls';
 import { createUploadDiagnostics } from './server/uploadDiagnostics.mjs';
+import { tryMultipartUpload } from './server/multipartUpload.mjs';
 
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_DOWNLOAD_BYTES = MAX_FILE_BYTES;
@@ -242,6 +243,15 @@ function fileProxyPlugin(env) {
           const presignText = await presignResponse.text();
 
           if (!presignResponse.ok) {
+            const fallback = await tryMultipartUpload({ presignStatus: presignResponse.status, presignBody: presignText,
+              host: finchatHost, apiKey, token, mime, extension, fileBody, diagnostics });
+            if (fallback) {
+              response.setHeader('X-Finchat-Upload-Mode', 'multipart');
+              response.statusCode = fallback.status;
+              response.setHeader('Content-Type', fallback.contentType || 'text/plain; charset=utf-8');
+              response.end(fallback.body);
+              return;
+            }
             diagnostics.failure(presignResponse.status, presignText);
             response.statusCode = presignResponse.status;
             response.end(presignText);
