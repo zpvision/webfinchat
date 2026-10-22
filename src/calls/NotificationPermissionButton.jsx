@@ -1,7 +1,7 @@
 export function NotificationPermissionButton({ calls, compact = false }) {
   const permission = calls.notificationPermission;
   if (!permission || permission === 'unsupported') return null;
-  const label = permission === 'granted' ? 'Уведомления о звонках включены'
+  const label = permission === 'granted' ? 'Уведомления о сообщениях и звонках включены'
     : permission === 'denied' ? 'Уведомления заблокированы. Разрешите их в настройках сайта.' : 'Включить уведомления браузера';
   return <button type="button" className={compact ? 'theme-button' : 'group-call-notice-permission'}
     disabled={permission !== 'default'} title={label} aria-label={label} onClick={calls.requestNotifications}>

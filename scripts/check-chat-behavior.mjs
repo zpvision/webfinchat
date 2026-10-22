@@ -83,8 +83,8 @@ try {
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
   await send('Emulation.setCPUThrottlingRate', { rate: 4 });
   // Warm module/ICU caches equally before measured runs; alternate before/after order.
-  await navigate('before'); await navigate('after');
-  for (let run = 0; run < 3; run++) {
+  if (!process.env.FINCHAT_REVIEW_SKIP_BENCHMARK) { await navigate('before'); await navigate('after'); }
+  for (let run = 0; run < (process.env.FINCHAT_REVIEW_SKIP_BENCHMARK ? 0 : 3); run++) {
     for (const mode of run % 2 ? ['after', 'before'] : ['before', 'after']) {
       await navigate(mode);
       const measured = { mode, ...await evaluate(`(() => { const m=window.__review.metrics; return { listPaintMs:m.listPaintMs, peakPending:m.peakPendingMap, framesParsed:m.framesParsed, longTaskCount:m.longTasks.length, longTaskTotalMs:m.longTasks.reduce((a,t)=>a+t.duration,0), longestTaskMs:Math.max(0,...m.longTasks.map(t=>t.duration)) }; })()`) };
@@ -139,6 +139,43 @@ try {
   await wait('window.__review.client.subscribedTopics.size >= 101'); await pause(3200);
   await evaluate(`window.__review.packet('usr050',450,'Сообщение после восстановления')`); await frames();
   assert.equal(await evaluate(`([...document.querySelectorAll('.chat-item')].find(b=>b.textContent.includes('Чат 050'))?.querySelector('.unread-badge')?.textContent)`), '50');
+  // Exercise message notification wiring in the actual MessengerScreen. Native
+  // notification UI is stubbed; Web Audio uses the browser's real AudioContext.
+  await pause(1300); // Allow the preceding reconnect-message chime throttle to expire.
+  await send('Page.bringToFront');
+  await evaluate(`(() => {
+    window.__messageTestFocused = true;
+    Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => window.__messageTestFocused });
+    window.__messageNotices = []; window.__messageTones = 0;
+    window.Notification = class {
+      static permission = 'granted';
+      static requestPermission() { throw new Error('Unexpected permission prompt'); }
+      constructor(title, options) { this.title=title; this.options=options; window.__messageNotices.push(this); }
+      close() { this.closed=true; }
+    };
+    const createOscillator = AudioContext.prototype.createOscillator;
+    AudioContext.prototype.createOscillator = function() { window.__messageTones++; return createOscillator.call(this); };
+  })()`);
+  const searchPoint = await evaluate(`(() => { const r=document.querySelector('.search-box input').getBoundingClientRect(); return {x:r.x+10,y:r.y+10}; })()`);
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...searchPoint });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...searchPoint });
+  await evaluate(`window.__review.packet('usr060',451,'Notification regression')`);
+  await pause(150);
+  await wait(`Boolean(document.querySelector('.message-notice')?.textContent.includes('Notification regression')) && window.__messageTones === 3`);
+  assert.equal(await evaluate('window.__messageNotices.length'), 1);
+  await evaluate(`window.__review.packet('usr060',451,'Duplicate')`);
+  assert.equal(await evaluate('window.__messageNotices.length'), 1);
+  await evaluate(`document.querySelector('.message-notice-open').click()`);
+  await wait(`document.querySelector('.message-list')?.textContent.includes('usr060') && !document.querySelector('.message-notice')`);
+  await evaluate(`window.__review.packet('usr060',452,'Visible chat stays quiet')`);
+  await frames();
+  assert.equal(await evaluate('window.__messageNotices.length'), 1);
+  await evaluate(`window.__messageTestFocused=false; window.__review.packet('usr060',453,'Background message')`);
+  await wait('window.__messageNotices.length === 2');
+  await evaluate(`window.__messageTestFocused=true; window.__messageNotices[1].onclick()`);
+  await frames();
+  assert.equal(await evaluate('window.__messageNotices[1].closed'), true);
+  results.checks.push('Message popup and real Web Audio chime; native notice creation/click; visible-chat suppression and replay deduplication');
   await evaluate(`window.__review.client.socket.packet({info:{topic:'me',src:'usrPeer',what:'call',seq:7,payload:{event:'invite',callId:'review-call',version:1,topic:'usrPeer',seq:7,audioOnly:true,expiresAt:new Date(Date.now()+30000).toISOString()}}})`);
   await wait(`Boolean(document.querySelector('button[aria-label="Ответить на звонок"]'))`);
   results.checks.push('Unchanged topics resubscribed after reconnect; unread message and incoming call delivered');

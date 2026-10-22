@@ -5,6 +5,8 @@ import { GroupCallButton, GroupCallBadge } from './calls/GroupCallButton.jsx';
 import { GroupCallNotifications } from './calls/GroupCallNotifications.jsx';
 import { NotificationPermissionButton } from './calls/NotificationPermissionButton.jsx';
 import { useMessageScroll } from './useMessageScroll.js';
+import { useMessageNotifications } from './useMessageNotifications.js';
+import { MessageNotice } from './MessageNotice.jsx';
 import {
   FinchatRealtimeClient,
   createPdfViewUrl,
@@ -2759,6 +2761,8 @@ function MessengerScreen({ session, onLogout, onSessionExpired, theme, onToggleT
   const [error, setError] = useState('');
   const client = useMemo(() => new FinchatRealtimeClient(session.token), [session.token]);
   const calls = useCalls(client);
+  const messageNotifications = useMessageNotifications({ client, session, chats, selectedId,
+    onOpen: (id) => { setSearchQuery(''); setSelectedId(id); } });
   const selectedIdRef = useRef(selectedId);
 
   useEffect(() => {
@@ -2905,6 +2909,7 @@ function MessengerScreen({ session, onLogout, onSessionExpired, theme, onToggleT
     <main className="messenger-page">
       <CallPanel calls={calls} />
       <GroupCallNotifications calls={calls} chats={chats} />
+      <MessageNotice notifications={messageNotifications} />
       <aside className="chat-sidebar" aria-label="Список чатов">
         <div className="sidebar-header">
           <div className="sidebar-brand">
