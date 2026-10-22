@@ -114,8 +114,3 @@ Vite читает `.env`, `.env.local`, `.env.[mode]`, `.env.[mode].local` пр�
 размером сжатого ответа. Поэтому download-прокси отправляет длину полученного Buffer;
 `Content-Encoding` upstream не переносится. PDF и upload уже используют фактическую длину.
 Описание поведения: https://github.com/nodejs/undici/issues/2514.
-
-HTTP file-прокси приводят пользовательский токен из base64url/непаддированного Base64
-к стандартному Base64 с padding перед запросом backend. Байты токена остаются прежними;
-WebSocket login и API-ключ не меняются. Проверки и границы диагностики:
-[docs/upload-auth-review.md](docs/upload-auth-review.md).

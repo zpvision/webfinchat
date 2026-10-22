@@ -3,7 +3,6 @@ import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import tls from 'node:tls';
-import { normalizeHttpToken } from './server/finchatHttpAuth.mjs';
 
 function loadDotEnv() {
   if (!existsSync('.env')) {
@@ -289,7 +288,7 @@ async function handlePdfView(request, response) {
   cleanupPdfViewTokens();
 
   if (request.method === 'POST') {
-    const token = normalizeHttpToken(singleHeader(request.headers['x-finchat-token']));
+    const token = singleHeader(request.headers['x-finchat-token']);
 
     if (!token) {
       send(response, 401, 'Missing FinChat token');
@@ -394,7 +393,7 @@ async function handleUpload(request, response) {
     return;
   }
 
-  const token = normalizeHttpToken(singleHeader(request.headers['x-finchat-token']));
+  const token = singleHeader(request.headers['x-finchat-token']);
   const mime = singleHeader(request.headers['x-file-mime']) || 'application/octet-stream';
   const extension = singleHeader(request.headers['x-file-ext']) || '';
   const declaredLength = Number(singleHeader(request.headers['content-length']) || 0);
@@ -489,7 +488,7 @@ async function handleDownload(request, response) {
     return;
   }
 
-  const token = normalizeHttpToken(singleHeader(request.headers['x-finchat-token']));
+  const token = singleHeader(request.headers['x-finchat-token']);
   const requestUrl = new URL(request.url || '', 'http://localhost');
   const normalizedRef = normalizeFileRef(requestUrl.searchParams.get('ref') || '');
 
