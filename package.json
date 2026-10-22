@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "test": "node --test src/api/calls.test.js src/api/callSounds.test.js",
+    "test": "node --test src/api/calls.test.js src/api/callSounds.test.js src/messageScroll.test.js src/api/subscriptionQueue.test.js",
+    "test:browser": "node scripts/check-chat-behavior.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "start": "node server.mjs"
   },

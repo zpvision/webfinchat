@@ -1,5 +1,7 @@
 ﻿const PROTOCOL_VERSION = '0.22';
 
+import { SubscriptionQueue } from './subscriptionQueue.js';
+
 function encodeBase64(value) {
   const bytes = new TextEncoder().encode(value);
   let binary = '';
@@ -1007,6 +1009,9 @@ export class FinchatRealtimeClient {
     this.listeners = new Set();
     this.subscribedTopics = new Set();
     this.pendingSubscriptions = new Map();
+    this.backgroundSubscriptions = new SubscriptionQueue((topic) => this.attach(topic, { optional: true }), {
+      isSubscribed: (topic) => this.subscribedTopics.has(topic),
+    });
     this.requestCounter = 0;
     this.connectPromise = null;
     this.handleMessage = this.handleMessage.bind(this);
@@ -1022,6 +1027,7 @@ export class FinchatRealtimeClient {
   }
 
   handleMessage(event) {
+    if (event.currentTarget && event.currentTarget !== this.socket) return;
     try {
       this.emit(JSON.parse(event.data));
     } catch {
@@ -1052,14 +1058,17 @@ export class FinchatRealtimeClient {
         }
         this.socket = socket;
         this.subscribedTopics.clear();
+        this.pendingSubscriptions.clear();
         socket.addEventListener('message', this.handleMessage);
         socket.addEventListener('close', () => {
           if (this.socket === socket) {
             this.subscribedTopics.clear();
+            this.backgroundSubscriptions.pause();
             this.emit({ connection: 'closed' });
           }
         });
         this.emit({ connection: 'opened' });
+        this.backgroundSubscriptions.resume();
       })().finally(() => { this.connectPromise = null; });
     }
     await this.connectPromise;
@@ -1067,6 +1076,8 @@ export class FinchatRealtimeClient {
 
   close() {
     this.closeRequested = true;
+    this.backgroundSubscriptions.pause();
+    this.backgroundSubscriptions.clear();
     if (!this.socket) {
       return;
     }
@@ -1097,19 +1108,19 @@ export class FinchatRealtimeClient {
       }
     }
 
+    const socket = this.socket;
     const id = this.nextId('sub');
 
     const attachRequest = (async () => {
-      this.socket.send(
-        JSON.stringify({
-          sub: {
-            id,
-            topic,
-          },
-        }),
-      );
+      const response = this.waitForSubscription(socket, id);
+      try {
+        socket.send(JSON.stringify({ sub: { id, topic } }));
+      } catch (error) {
+        response.cancel(error);
+      }
 
-      const packet = await waitForPacket(this.socket, (message) => message.ctrl?.id === id, 15000);
+      const packet = await response.promise;
+      if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) throw new Error('Соединение изменилось.');
 
       if (packet.ctrl.code >= 300) {
         if (isAlreadySubscribed(packet.ctrl)) {
@@ -1134,8 +1145,34 @@ export class FinchatRealtimeClient {
     try {
       return await attachRequest;
     } finally {
-      this.pendingSubscriptions.delete(topic);
+      if (this.pendingSubscriptions.get(topic) === attachRequest) this.pendingSubscriptions.delete(topic);
     }
+  }
+
+  subscribeInBackground(topics) {
+    return this.backgroundSubscriptions.replace(topics);
+  }
+
+  waitForSubscription(socket, id) {
+    let cancel;
+    const promise = new Promise((resolve, reject) => {
+      let unsubscribe;
+      const cleanup = () => {
+        clearTimeout(timer);
+        unsubscribe?.();
+        socket.removeEventListener('close', closed);
+        socket.removeEventListener('error', closed);
+      };
+      cancel = (error) => { cleanup(); reject(error); };
+      const closed = () => cancel(new Error('Соединение FinChat закрыто.'));
+      const timer = setTimeout(() => cancel(new Error('API не ответил вовремя.')), 15000);
+      unsubscribe = this.onPacket((packet) => {
+        if (this.socket === socket && packet.ctrl?.id === id) { cleanup(); resolve(packet); }
+      });
+      socket.addEventListener('close', closed);
+      socket.addEventListener('error', closed);
+    });
+    return { promise, cancel };
   }
 
   async ensureAttached(topic) {

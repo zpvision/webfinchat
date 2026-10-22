@@ -4,6 +4,7 @@ import { CallPanel, useCalls } from './Calls.jsx';
 import { GroupCallButton, GroupCallBadge } from './calls/GroupCallButton.jsx';
 import { GroupCallNotifications } from './calls/GroupCallNotifications.jsx';
 import { NotificationPermissionButton } from './calls/NotificationPermissionButton.jsx';
+import { useMessageScroll } from './useMessageScroll.js';
 import {
   FinchatRealtimeClient,
   createPdfViewUrl,
@@ -39,6 +40,10 @@ const SESSION_TOUCH_THROTTLE_MS = 60 * 1000;
 const INITIAL_MESSAGE_PAGE_SIZE = 10;
 const MESSAGE_PAGE_SIZE = 30;
 const MAX_QUOTED_MESSAGE_LOOKUP_PAGES = 20;
+const chatDateFormatter = new Intl.DateTimeFormat('ru-RU', {
+  day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+});
+const messageTimeFormatter = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' });
 
 function getSessionExpiresAt(session) {
   return Number(session?.expiresAt || 0);
@@ -161,12 +166,7 @@ function formatChatDate(value) {
     return '';
   }
 
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(value));
+  return chatDateFormatter.format(new Date(value));
 }
 
 function formatMessageTime(value) {
@@ -174,10 +174,7 @@ function formatMessageTime(value) {
     return '';
   }
 
-  return new Intl.DateTimeFormat('ru-RU', {
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(value));
+  return messageTimeFormatter.format(new Date(value));
 }
 
 function formatMessageDate(value) {
@@ -1200,14 +1197,8 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
   const messagesRef = useRef([]);
   const fileInputRef = useRef(null);
   const dragDepthRef = useRef(0);
-  const preserveScrollRef = useRef(false);
-  const stickToBottomRef = useRef(true);
   const hasOlderMessagesRef = useRef(false);
   const olderLoadingRef = useRef(false);
-  const firstPaintRef = useRef(true);
-  const initialBottomLockRef = useRef(false);
-  const bottomLockTimerRef = useRef(null);
-  const pendingScrollRestoreRef = useRef(null);
   const highlightTimerRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const recordingStreamRef = useRef(null);
@@ -1220,6 +1211,9 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
   const loadingMemberIdsRef = useRef(new Set());
   const lastReadSeqRef = useRef(0);
   const currentTopicRef = useRef(chat?.topic || '');
+  const requestScopeRef = useRef(null);
+  const isCurrentRequest = (scope) => Boolean(scope && requestScopeRef.current === scope);
+  const scroll = useMessageScroll({ containerRef: messageAreaRef, topic: chat?.topic, messages, status, setVisible: setMessagesVisible });
   const displayMembers = useMemo(() => mergeMembers(groupMembers, knownUsers), [groupMembers, knownUsers]);
   const receiptMembers = useMemo(() => mergeMembers(groupMembers, receiptUsers), [groupMembers, receiptUsers]);
   const participantMembers = useMemo(
@@ -1250,11 +1244,14 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
     return requestError.message || fallbackMessage;
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     currentTopicRef.current = chat?.topic || '';
-  }, [chat?.topic]);
+    const scope = { topic: chat?.topic };
+    requestScopeRef.current = scope;
+    return () => { if (requestScopeRef.current === scope) requestScopeRef.current = null; };
+  }, [chat?.topic, client]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
 
@@ -1299,10 +1296,6 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
       setOlderStatus('idle');
       setHighlightedSeq(null);
       setReplyPreviews({});
-      firstPaintRef.current = true;
-      initialBottomLockRef.current = true;
-      stickToBottomRef.current = true;
-      pendingScrollRestoreRef.current = null;
       resolvedReplySeqsRef.current = new Set();
 
       try {
@@ -1316,7 +1309,8 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
           return;
         }
 
-        setMessages(items);
+        scroll.prepare();
+        setMessages((current) => mergeMessageLists(items, current));
         setHasOlderMessages(items.length > 0 && Math.min(...items.map((message) => Number(message.seq || Infinity))) > 1);
         if (items.length > 0) {
           onChatActivity?.(items[items.length - 1]);
@@ -1430,10 +1424,13 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
       return undefined;
     }
 
+    const requestScope = requestScopeRef.current;
     return client.onPacket((packet) => {
+      if (!isCurrentRequest(requestScope)) return;
       const deletedRanges = getDeletedRanges(packet);
 
       if (deletedRanges.length > 0 && getPacketTopics(packet).includes(chat.topic)) {
+        scroll.prepare();
         setMessages((current) =>
           current.filter(
             (message) =>
@@ -1478,6 +1475,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
 
       const incomingMessage = normalizeMessage(packet.data, session.token);
 
+      scroll.prepare();
       setMessages((current) => {
         if (incomingMessage.replaceSeq) {
           return current.map((message) =>
@@ -1548,6 +1546,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
     }
 
     const requestTopic = chat.topic;
+    const requestScope = requestScopeRef.current;
     const loadedSeqs = new Set(
         messages
           .map((message) => Number(message.seq))
@@ -1577,6 +1576,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
 
       loadTopicMessageBySeq(session.token, chat.topic, seq)
         .then(async (message) => {
+          if (!isCurrentRequest(requestScope)) return;
           let quotedMessage = message;
 
           if (!quotedMessage && Number.isFinite(firstSeq) && seq < firstSeq) {
@@ -1589,6 +1589,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
                 beforeSeq,
               });
 
+              if (!isCurrentRequest(requestScope)) return;
               quotedMessage = olderItems.find((item) => Number(item.seq) === seq);
 
               if (quotedMessage || olderItems.length === 0) {
@@ -1605,7 +1606,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
             }
           }
 
-          if (requestTopic !== currentTopicRef.current) {
+          if (!isCurrentRequest(requestScope)) {
             return;
           }
 
@@ -1626,6 +1627,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
           }
         })
         .catch(() => {
+          if (!isCurrentRequest(requestScope)) return;
           resolvedReplySeqsRef.current.delete(seq);
         });
     });
@@ -1650,10 +1652,6 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
       window.clearTimeout(highlightTimerRef.current);
     }
 
-    if (bottomLockTimerRef.current) {
-      window.clearTimeout(bottomLockTimerRef.current);
-    }
-
     recordingShouldSendRef.current = false;
     stopVoiceAnalyser();
     mediaRecorderRef.current?.stop?.();
@@ -1675,101 +1673,11 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
     return () => window.clearInterval(intervalId);
   }, [recordingStartedAt, recordingStatus]);
 
-  useLayoutEffect(() => {
-    if (status !== 'ready' || messages.length === 0) {
-      return;
-    }
-
-    const scrollContainer = messageAreaRef.current;
-
-    if (!scrollContainer) {
-      return;
-    }
-
-    if (preserveScrollRef.current) {
-      preserveScrollRef.current = false;
-
-      const restore = pendingScrollRestoreRef.current;
-      pendingScrollRestoreRef.current = null;
-
-      if (restore) {
-        if (Number.isFinite(restore.bottomOffset)) {
-          scrollContainer.scrollTop = scrollContainer.scrollHeight - restore.bottomOffset;
-        } else if (Number.isFinite(restore.scrollHeight) && Number.isFinite(restore.scrollTop)) {
-          scrollContainer.scrollTop = scrollContainer.scrollHeight - restore.scrollHeight + restore.scrollTop;
-        }
-      }
-
-      if (!messagesVisible) {
-        setMessagesVisible(true);
-      }
-
-      return;
-    }
-
-    stickToBottomRef.current = true;
-
-    if (firstPaintRef.current) {
-      scrollContainer.scrollTop = scrollContainer.scrollHeight;
-      firstPaintRef.current = false;
-    } else {
-      messageEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
-    }
-
-    if (!messagesVisible) {
-      setMessagesVisible(true);
-    }
-
-    if (initialBottomLockRef.current) {
-      if (bottomLockTimerRef.current) {
-        window.clearTimeout(bottomLockTimerRef.current);
-      }
-
-      bottomLockTimerRef.current = window.setTimeout(() => {
-        initialBottomLockRef.current = false;
-      }, 2500);
-    }
-  }, [messages.length, status]);
-
-  useEffect(() => {
-    if (status !== 'ready' || messages.length === 0 || !initialBottomLockRef.current) {
-      return undefined;
-    }
-
-    const lockStartedAt = Date.now();
-    const intervalId = window.setInterval(() => {
-      if (!initialBottomLockRef.current || Date.now() - lockStartedAt > 2500) {
-        window.clearInterval(intervalId);
-        initialBottomLockRef.current = false;
-        return;
-      }
-
-      if (stickToBottomRef.current) {
-        const scrollContainer = messageAreaRef.current;
-
-        if (scrollContainer) {
-          scrollContainer.scrollTop = scrollContainer.scrollHeight;
-        }
-      }
-    }, 120);
-
-    return () => window.clearInterval(intervalId);
-  }, [messages.length, status]);
-
-  const scrollToBottomIfNeeded = () => {
-    if ((!stickToBottomRef.current && !initialBottomLockRef.current) || preserveScrollRef.current) {
-      return;
-    }
-
-    window.requestAnimationFrame(() => {
-      messageEndRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' });
-    });
-  };
-
   const loadOlderMessages = async () => {
     const currentMessages = messagesRef.current;
+    const requestScope = requestScopeRef.current;
 
-    if (olderLoadingRef.current || !hasOlderMessagesRef.current || currentMessages.length === 0 || !chat?.topic) {
+    if (!requestScope || olderLoadingRef.current || !hasOlderMessagesRef.current || currentMessages.length === 0 || !chat?.topic) {
       return;
     }
 
@@ -1781,11 +1689,8 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
       return;
     }
 
-    const scrollContainer = messageAreaRef.current;
-    const previousScrollHeight = scrollContainer?.scrollHeight || 0;
-    const previousScrollTop = scrollContainer?.scrollTop || 0;
-
     olderLoadingRef.current = true;
+    scroll.prepare();
     setOlderStatus('loading');
     setError('');
 
@@ -1796,20 +1701,15 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
         beforeSeq: firstSeq,
       });
 
-      preserveScrollRef.current = true;
-      pendingScrollRestoreRef.current = scrollContainer
-        ? {
-            scrollHeight: previousScrollHeight,
-            scrollTop: previousScrollTop,
-          }
-        : null;
+      if (!isCurrentRequest(requestScope)) return;
+      scroll.prepare();
       setMessages((current) => {
         const knownKeys = new Set(current.map((message) => message.seq || message.id));
         const uniqueOlderItems = olderItems.filter((message) => !knownKeys.has(message.seq || message.id));
 
         return mergeMessageLists(uniqueOlderItems, current);
       });
-      const nextMessages = mergeMessageLists(olderItems, currentMessages);
+      const nextMessages = mergeMessageLists(olderItems, messagesRef.current);
       const nextFirstSeq = Math.min(...nextMessages.map((message) => Number(message.seq || Infinity)));
       const stillHasOlder = olderItems.length > 0 && Number.isFinite(nextFirstSeq) && nextFirstSeq > 1 && nextFirstSeq < firstSeq;
 
@@ -1819,6 +1719,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
       olderLoadingRef.current = false;
 
       window.requestAnimationFrame(() => {
+        if (!isCurrentRequest(requestScope)) return;
         const currentScrollContainer = messageAreaRef.current;
 
         if (currentScrollContainer && currentScrollContainer.scrollTop <= 160 && hasOlderMessagesRef.current) {
@@ -1827,6 +1728,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
       });
 
     } catch (requestError) {
+      if (!isCurrentRequest(requestScope)) return;
       setError(handleRequestError(requestError, 'Не удалось загрузить предыдущие сообщения.'));
       setOlderStatus('idle');
       olderLoadingRef.current = false;
@@ -1871,7 +1773,8 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
     }
 
     setHighlightedSeq(targetSeq);
-    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    target.scrollIntoView({ block: 'center', behavior: 'auto' });
+    scroll.stopFollowing();
 
     if (highlightTimerRef.current) {
       window.clearTimeout(highlightTimerRef.current);
@@ -1886,8 +1789,9 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
 
   const jumpToQuotedMessage = async (reply) => {
     const targetSeq = Number(reply?.seq);
+    const requestScope = requestScopeRef.current;
 
-    if (!Number.isFinite(targetSeq) || !chat?.topic || olderStatus === 'loading') {
+    if (!requestScope || !Number.isFinite(targetSeq) || !chat?.topic || olderLoadingRef.current) {
       return;
     }
 
@@ -1906,6 +1810,8 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
       return;
     }
 
+    olderLoadingRef.current = true;
+    scroll.prepare();
     setOlderStatus('loading');
 
     try {
@@ -1918,22 +1824,24 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
           beforeSeq: firstSeq,
         });
 
+        if (!isCurrentRequest(requestScope)) return;
         if (olderItems.length === 0) {
           setHasOlderMessages(false);
           setError('Цитируемое сообщение не найдено в истории чата.');
           break;
         }
 
-        loadedMessages = mergeMessageLists(olderItems, loadedMessages);
+        loadedMessages = mergeMessageLists(olderItems, messagesRef.current);
         firstSeq = Math.min(...loadedMessages.map((message) => Number(message.seq || Infinity)));
-        preserveScrollRef.current = true;
-        setMessages(loadedMessages);
+        scroll.prepare();
+        setMessages((current) => mergeMessageLists(olderItems, current));
         setHasOlderMessages(olderItems.length === MESSAGE_PAGE_SIZE);
 
         if (loadedMessages.some((message) => Number(message.seq) === targetSeq)) {
           found = true;
           window.requestAnimationFrame(() => {
             window.requestAnimationFrame(() => {
+              if (!isCurrentRequest(requestScope)) return;
               scrollToMessage(targetSeq);
             });
           });
@@ -1950,17 +1858,20 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
         setError('Цитируемое сообщение не найдено в ближайшей истории чата.');
       }
     } catch (requestError) {
+      if (!isCurrentRequest(requestScope)) return;
       setError(handleRequestError(requestError, 'Не удалось загрузить цитируемое сообщение.'));
     } finally {
-      setOlderStatus('idle');
+      if (isCurrentRequest(requestScope)) {
+        scroll.prepare();
+        olderLoadingRef.current = false;
+        setOlderStatus('idle');
+      }
     }
   };
 
   const handleMessageScroll = (event) => {
     const target = event.currentTarget;
-    const distanceToBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
-
-    stickToBottomRef.current = distanceToBottom < 120;
+    scroll.onScroll();
 
     if (target.scrollTop <= 80) {
       loadOlderMessages();
@@ -1996,6 +1907,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
     event.preventDefault();
 
     const trimmedDraft = draft.trim();
+    const requestScope = requestScopeRef.current;
 
     if (
       (!trimmedDraft && selectedFiles.length === 0) ||
@@ -2017,6 +1929,8 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
           text: trimmedDraft,
         });
 
+        if (!isCurrentRequest(requestScope)) return;
+        scroll.prepare();
         setMessages((current) =>
           current.map((message) =>
             message.id === editingMessage.id || Number(message.seq) === Number(editingMessage.seq)
@@ -2050,6 +1964,9 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
         from: session.user || sentMessage.from,
       };
 
+      if (!isCurrentRequest(requestScope)) return;
+      scroll.jumpToBottom();
+      scroll.prepare();
       setMessages((current) => {
         if (current.some((message) => isSameMessage(message, localSentMessage))) {
           return current;
@@ -2063,6 +1980,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
       setSelectedFiles([]);
       setSendStatus('idle');
     } catch (requestError) {
+      if (!isCurrentRequest(requestScope)) return;
       setError(handleRequestError(requestError, 'Не удалось отправить сообщение.'));
       setSendStatus('idle');
     }
@@ -2183,6 +2101,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
   };
 
   const sendVoiceFile = async (file) => {
+    const requestScope = requestScopeRef.current;
     if (!file || !chat.canWrite) {
       return;
     }
@@ -2203,6 +2122,9 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
         from: session.user || sentMessage.from,
       };
 
+      if (!isCurrentRequest(requestScope)) return;
+      scroll.jumpToBottom();
+      scroll.prepare();
       setMessages((current) => {
         if (current.some((message) => isSameMessage(message, localSentMessage))) {
           return current;
@@ -2215,6 +2137,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
       setReplyTo(null);
       setSendStatus('idle');
     } catch (requestError) {
+      if (!isCurrentRequest(requestScope)) return;
       setError(handleRequestError(requestError, 'Не удалось отправить голосовое сообщение.'));
       setSendStatus('idle');
     }
@@ -2438,6 +2361,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
   };
 
   const deleteMessage = async (message) => {
+    const requestScope = requestScopeRef.current;
     setMessageMenu(null);
 
     if (!window.confirm('Удалить сообщение?')) {
@@ -2449,9 +2373,12 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
 
     try {
       await client.deleteMessage({ topic: chat.topic, message });
+      if (!isCurrentRequest(requestScope)) return;
+      scroll.prepare();
       setMessages((current) => current.filter((item) => item.id !== message.id && item.seq !== message.seq));
       setSendStatus('idle');
     } catch (requestError) {
+      if (!isCurrentRequest(requestScope)) return;
       setError(handleRequestError(requestError, 'Не удалось удалить сообщение.'));
       setSendStatus('idle');
     }
@@ -2539,7 +2466,8 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
         </aside>
       )}
 
-      <div className="message-area" ref={messageAreaRef} onScroll={handleMessageScroll}>
+      <div className="message-area" ref={messageAreaRef} onScroll={handleMessageScroll}
+        onLoadCapture={scroll.onMediaLoad} onLoadedMetadataCapture={scroll.onMediaLoad}>
         {status === 'loading' && (
           <div className="message-list message-list-loading" aria-busy="true">
             <div className="message-skeleton incoming" />
@@ -2605,7 +2533,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
                         <MessageAttachments
                           attachments={message.attachments}
                           token={session.token}
-                          onMediaLoad={scrollToBottomIfNeeded}
+                          onMediaLoad={scroll.onMediaLoad}
                         />
                         {!message.text && !message.attachments?.length && <p>Сообщение без текста</p>}
                         <footer>
@@ -2637,6 +2565,8 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
         )}
       </div>
 
+      {status === 'ready' && !scroll.atBottom && <button className="message-jump-bottom" type="button"
+        onClick={scroll.jumpToBottom} aria-label="К последним сообщениям">↓ К последним</button>}
       {messageMenu && (
         <div
           className="message-context-menu"
@@ -2830,7 +2760,6 @@ function MessengerScreen({ session, onLogout, onSessionExpired, theme, onToggleT
   const client = useMemo(() => new FinchatRealtimeClient(session.token), [session.token]);
   const calls = useCalls(client);
   const selectedIdRef = useRef(selectedId);
-  const subscribedTopicsRef = useRef(new Set());
 
   useEffect(() => {
     selectedIdRef.current = selectedId;
@@ -2887,34 +2816,15 @@ function MessengerScreen({ session, onLogout, onSessionExpired, theme, onToggleT
     };
   }, [session?.token]);
 
-  const chatTopicsKey = useMemo(() => chats.map((chat) => chat.topic).join('|'), [chats]);
-
-  useEffect(() => client.onPacket((packet) => {
-    if (packet.connection !== 'opened') return;
-    subscribedTopicsRef.current.clear();
-    chats.forEach((chat) => {
-      client.attach(chat.topic, { optional: true }).then(() => {
-        subscribedTopicsRef.current.add(chat.topic);
-      }).catch(() => {});
-    });
-  }), [client, chatTopicsKey]);
+  const chatTopicsKey = useMemo(() => [...new Set(chats.map((chat) => chat.topic).filter(Boolean))].sort().join('|'), [chats]);
 
   useEffect(() => {
-    if (status !== 'ready' || chats.length === 0) {
+    if (status !== 'ready' || !chatTopicsKey) {
       return undefined;
     }
 
-    chats.forEach((chat) => {
-      if (subscribedTopicsRef.current.has(chat.topic)) {
-        return;
-      }
-
-      subscribedTopicsRef.current.add(chat.topic);
-      client.attach(chat.topic, { optional: true }).catch(() => {
-        subscribedTopicsRef.current.delete(chat.topic);
-      });
-    });
-  }, [chatTopicsKey, chats, client, status]);
+    return client.subscribeInBackground(chatTopicsKey.split('|'));
+  }, [chatTopicsKey, client, status]);
 
   useEffect(() => {
     return client.onPacket((packet) => {
@@ -3086,6 +2996,7 @@ function MessengerScreen({ session, onLogout, onSessionExpired, theme, onToggleT
 
       {selectedChat ? (
         <Conversation
+          key={selectedChat.topic}
           calls={calls}
           chat={selectedChat}
           client={client}

@@ -861,6 +861,7 @@ html[data-theme="dark"] .group-members-panel {
 }
 
 .message-area {
+  overflow-anchor: none;
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
@@ -2286,6 +2287,8 @@ html[data-theme="dark"] .pdf-modal-stage {
     padding: 0;
   }
 }
+.message-jump-bottom { position: absolute; right: 24px; bottom: 112px; z-index: 15; padding: 9px 14px; border: 1px solid var(--fc-line); border-radius: 18px; background: var(--fc-bg); color: var(--fc-primary); box-shadow: 0 4px 18px #24184620; font: inherit; font-size: 12px; cursor: pointer; }
+.message-jump-bottom:focus-visible { outline: 2px solid var(--fc-primary); outline-offset: 3px; }
 .call-start {
   display: inline-flex;
   align-items: center;
