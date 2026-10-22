@@ -27,7 +27,7 @@ function loadDotEnv() {
     const key = trimmed.slice(0, separator).trim();
     const value = trimmed.slice(separator + 1).trim().replace(/^["']|["']$/g, '');
 
-    if (!process.env[key]) {
+    if (process.env[key] === undefined) {
       process.env[key] = value;
     }
   }
@@ -549,7 +549,8 @@ async function handleDownload(request, response) {
   setSecurityHeaders(response);
   response.statusCode = 200;
   response.setHeader('Content-Type', contentType);
-  response.setHeader('Content-Length', fileResponse.headers.get('content-length') || String(fileBody.length));
+  // fetch() may decompress the upstream body without updating its headers.
+  response.setHeader('Content-Length', String(fileBody.length));
   response.end(fileBody);
 }
 
@@ -659,5 +660,5 @@ const server = createServer(async (request, response) => {
 
 server.on('upgrade', proxyWebSocket);
 server.listen(PORT, () => {
-  process.stdout.write(`webfinchat server listening on http://localhost:${PORT}\n`);
+  process.stdout.write(`webfinchat server listening on http://localhost:${server.address().port}\n`);
 });

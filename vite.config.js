@@ -152,6 +152,8 @@ function createContentDispositionFilename(name) {
 function fileProxyPlugin(env) {
   const finchatHost = env.FINCHAT_HOST || 'api.dev.finchat.club';
   const apiKey = env.FINCHAT_API_KEY || '';
+  const maxFileBytes = Number(env.MAX_FILE_BYTES || MAX_FILE_BYTES);
+  const maxDownloadBytes = Number(env.MAX_DOWNLOAD_BYTES || maxFileBytes);
   const pdfViewTokens = new Map();
   const allowedOrigins = (env.ALLOWED_ORIGINS || '')
     .split(',')
@@ -203,13 +205,13 @@ function fileProxyPlugin(env) {
           const extension = singleHeader(request.headers['x-file-ext']) || '';
           const declaredLength = Number(singleHeader(request.headers['content-length']) || 0);
 
-          if (declaredLength > MAX_FILE_BYTES) {
+          if (declaredLength > maxFileBytes) {
             response.statusCode = 413;
             response.end('File is too large');
             return;
           }
 
-          const fileBody = await readBody(request);
+          const fileBody = await readBody(request, maxFileBytes);
 
           if (!token) {
             response.statusCode = 401;
@@ -359,7 +361,7 @@ function fileProxyPlugin(env) {
           let fileBody;
 
           try {
-            fileBody = await readResponseBody(fileResponse);
+            fileBody = await readResponseBody(fileResponse, maxDownloadBytes);
           } catch (error) {
             response.statusCode = 413;
             response.end(error.message || 'File is too large');
@@ -451,7 +453,7 @@ function fileProxyPlugin(env) {
           let fileBody;
 
           try {
-            fileBody = await readResponseBody(fileResponse);
+            fileBody = await readResponseBody(fileResponse, maxDownloadBytes);
           } catch (error) {
             response.statusCode = 413;
             response.end(error.message || 'File is too large');
@@ -480,7 +482,8 @@ function fileProxyPlugin(env) {
             }
           }
 
-          const contentLength = fileResponse.headers.get('content-length') || String(fileBody.length);
+          // fetch() may decompress the upstream body without updating its headers.
+          const contentLength = String(fileBody.length);
 
           response.statusCode = 200;
           response.setHeader('Content-Type', contentType);
@@ -560,8 +563,9 @@ function fileProxyPlugin(env) {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  const finchatHost = env.VITE_FINCHAT_HOST || env.FINCHAT_HOST || 'api.dev.finchat.club';
-  const finchatApiKey = env.VITE_FINCHAT_API_KEY || env.FINCHAT_API_KEY || '';
+  // Direct browser connections are opt-in. Server credentials stay in the proxy.
+  const finchatHost = env.VITE_FINCHAT_HOST || '';
+  const finchatApiKey = env.VITE_FINCHAT_API_KEY || '';
 
   return {
     define: {
