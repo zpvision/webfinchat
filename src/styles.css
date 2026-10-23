@@ -2316,6 +2316,15 @@ html[data-theme="dark"] .pdf-modal-stage {
 .call-start:active:not(:disabled) { transform: translateY(0); }
 .call-start:focus-visible { outline: 3px solid #b9a3ee; outline-offset: 3px; }
 .call-start:disabled { opacity: .5; box-shadow: none; cursor: not-allowed; }
+.conversation-call-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; margin-left: auto; max-width: 340px; }
+.conversation-call-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+.conversation-call-buttons .call-start { margin-left: 0; }
+.conversation-call-note { color: var(--fc-muted); font-size: 10px; line-height: 1.4; text-align: right; }
+@media (max-width: 700px) {
+  .conversation-header { flex-wrap: wrap; }
+  .conversation-call-actions { width: 100%; max-width: none; }
+  .conversation-call-note { max-width: 340px; }
+}
 @media (max-width: 380px) {
   .call-start { gap: 6px; padding-right: 10px; font-size: 12px; }
 }
