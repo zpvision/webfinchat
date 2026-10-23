@@ -2418,16 +2418,15 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
         <div className="conversation-call-buttons">
         {chat.isGroup && <GroupCallButton chat={chat} calls={calls} members={displayMembers} />}
         {!chat.isGroup && chat.topic?.startsWith('usr') && <button className="call-start" type="button"
-          disabled={!calls.ready || Boolean(calls.call)} onClick={() => calls.start(chat, 'video')}
-          title={!calls.ready ? calls.reason : 'Видеозвонок'} aria-label="Видеозвонок">
+          disabled
+          title="Скоро" aria-label="Видеозвонок">
           <span className="call-start-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="2" y="5" width="13" height="14" rx="3"/><path d="m15 10 7-4v12l-7-4"/></svg></span>
           <span>Видеозвонок</span>
         </button>}
         {!chat.isGroup && chat.topic?.startsWith('usr') && (
           <button className="call-start" type="button"
-            disabled={!calls.ready || Boolean(calls.call)}
-            title={!calls.ready ? calls.reason : calls.call ? 'Сначала завершите текущий звонок' : 'Позвонить собеседнику'}
-            onClick={() => calls.start(chat)} aria-label="Позвонить собеседнику">
+            disabled
+            title="Скоро" aria-label="Позвонить собеседнику">
             <span className="call-start-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21 16.4v2.8a1.9 1.9 0 0 1-2.1 1.9A17.4 17.4 0 0 1 3 5.2 1.9 1.9 0 0 1 4.9 3h2.8a1.9 1.9 0 0 1 1.9 1.6c.1.9.4 1.8.7 2.6a1.9 1.9 0 0 1-.4 2l-1.2 1.2a14 14 0 0 0 4.9 4.9l1.2-1.2a1.9 1.9 0 0 1 2-.4c.8.3 1.7.6 2.6.7a1.9 1.9 0 0 1 1.6 2Z" />
@@ -2439,7 +2438,7 @@ function Conversation({ chat, client, session, onChatActivity, onSessionExpired,
         )}
         </div>
         {(!chat.isGroup || (calls.ready && calls.groupReady)) && <small className="conversation-call-note">
-          Звонки работают только в веб версии. В приложении появится в течении 2 недель
+          Скоро
         </small>}
         </div>}
       </header>
