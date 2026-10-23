@@ -583,6 +583,13 @@ async function serveStatic(request, response) {
   setSecurityHeaders(response);
   response.statusCode = 200;
   response.setHeader('Content-Type', MIME_TYPES[extname(safePath)] || 'application/octet-stream');
+  if (extname(safePath) === '.html' || pathname === '/service-worker.js') {
+    response.setHeader('Cache-Control', 'no-store');
+  } else if (safePath === filePath && /^\/assets\/[^/]+-[\w-]{8,}\.[a-z0-9]+$/i.test(pathname)) {
+    response.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  } else {
+    response.setHeader('Cache-Control', 'no-cache');
+  }
 
   createReadStream(safePath).pipe(response);
 }

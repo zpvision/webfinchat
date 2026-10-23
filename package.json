@@ -11,6 +11,7 @@
     "build": "vite build",
     "test": "node --test src/api/calls.test.js src/api/callSounds.test.js src/api/messageNotifications.test.js src/messageScroll.test.js src/api/subscriptionQueue.test.js tests/*.test.mjs",
     "test:browser": "node scripts/check-chat-behavior.mjs",
+    "test:browser:cache": "node scripts/check-legacy-worker.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "start": "node server.mjs"
   },

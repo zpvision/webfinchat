@@ -4,7 +4,7 @@ import { createServer, get } from 'node:http';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { gzipSync, deflateSync, brotliCompressSync } from 'node:zlib';
@@ -87,6 +87,10 @@ async function startFixture(t, mode, apiKey = 'environment-test-key') {
   const cwd = await mkdtemp(join(tmpdir(), 'finchat-proxy-test-'));
   await mkdir(join(cwd, 'dist'));
   await writeFile(join(cwd, 'dist/index.html'), '<!doctype html><title>Clean test</title>');
+  await writeFile(join(cwd, 'dist/service-worker.js'), await readFile(join(root, 'public/service-worker.js')));
+  await mkdir(join(cwd, 'dist/assets'));
+  await writeFile(join(cwd, 'dist/assets/index-AbCd1234.js'), 'console.log("asset fixture");');
+  await writeFile(join(cwd, 'dist/site.webmanifest'), '{}');
   await writeFile(join(cwd, '.env'), 'FINCHAT_API_KEY=file-must-not-override-environment\n');
   const env = { ...process.env, PORT: '0', FINCHAT_HOST: 'files.test',
     FINCHAT_API_KEY: apiKey, LIVEKIT_URL: 'wss://media.test',
@@ -298,6 +302,26 @@ for (const mode of ['production', 'development']) {
       assert.match(response.headers.get('content-security-policy'), /https:\/\/files.test/);
       assert.match(response.headers.get('content-security-policy'), /wss:\/\/media.test/);
       assert.equal(response.headers.get('permissions-policy'), 'camera=(self), microphone=(self), geolocation=()');
+    });
+    if (mode === 'production') await t.test('HTML cannot be cached; legacy worker is valid uncached JS; only hashed assets are immutable', async () => {
+      for (const path of ['/', '/index.html', '/?check=fresh', '/chat/fixture', '/assets/missing.js']) {
+        const response = await fetch(base + path);
+        assert.equal(response.status, 200);
+        assert.match(response.headers.get('content-type'), /^text\/html/);
+        assert.equal(response.headers.get('cache-control'), 'no-store');
+        await response.text();
+      }
+      const worker = await fetch(base + '/service-worker.js');
+      assert.equal(worker.status, 200);
+      assert.match(worker.headers.get('content-type'), /javascript/);
+      assert.equal(worker.headers.get('cache-control'), 'no-store');
+      assert.match(await worker.text(), /self\.registration\.unregister\(\)/);
+      const asset = await fetch(base + '/assets/index-AbCd1234.js');
+      assert.equal(asset.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+      assert.match(await asset.text(), /asset fixture/);
+      const manifest = await fetch(base + '/site.webmanifest');
+      assert.equal(manifest.headers.get('cache-control'), 'no-cache');
+      await manifest.text();
     });
   });
 }
