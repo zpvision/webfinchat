@@ -42,6 +42,8 @@ function RecoveryDialog({ cooldowns, onClose }) {
   const request = useRef(null);
   const copyTimer = useRef(null);
   const mounted = useRef(false);
+  const preparing = step === 'preparing';
+  const locked = pending || preparing;
   const normalizedPhone = normalizePhone(phone);
   const seconds = Math.max(0, Math.ceil((retryAt - now) / 1000));
 
@@ -63,7 +65,14 @@ function RecoveryDialog({ cooldowns, onClose }) {
 
   useEffect(() => {
     if (step === 'success') dialog.current?.querySelector('[data-copy-password]')?.focus();
+    else if (step === 'preparing') dialog.current?.focus();
     else input.current?.focus();
+  }, [step]);
+
+  useEffect(() => {
+    if (step !== 'preparing') return;
+    const timer = setTimeout(() => setStep('success'), 2000);
+    return () => clearTimeout(timer);
   }, [step]);
 
   useEffect(() => {
@@ -114,7 +123,7 @@ function RecoveryDialog({ cooldowns, onClose }) {
         if (controller.signal.aborted) return;
         setCredentials(result);
         setCode('');
-        setStep('success');
+        setStep('preparing');
       } else {
         // Also limit retries after a lost response: the SMS may have been sent.
         startCooldown(60);
@@ -156,12 +165,17 @@ function RecoveryDialog({ cooldowns, onClose }) {
   }
 
   function close() {
-    if (!request.current) onClose();
+    if (!request.current && !preparing) onClose();
   }
 
   function containFocus(event) {
     if (event.key !== 'Tab') return;
     const controls = Array.from(dialog.current.querySelectorAll('button:not(:disabled), input:not(:disabled)'));
+    if (!controls.length) {
+      event.preventDefault();
+      dialog.current.focus();
+      return;
+    }
     const first = controls[0], last = controls.at(-1);
     if ((event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last)) {
       event.preventDefault();
@@ -169,23 +183,27 @@ function RecoveryDialog({ cooldowns, onClose }) {
     }
   }
 
-  const title = step === 'success' ? 'Доступ восстановлен' : step === 'code' ? 'Проверьте SMS' : 'Восстановить доступ';
+  const title = preparing ? 'Готовим для вас данные' : step === 'success' ? 'Доступ восстановлен' : step === 'code' ? 'Проверьте SMS' : 'Восстановить доступ';
   const description = step === 'success'
     ? 'Ваш новый пароль — два слова и восемь цифр. Сохраните их перед закрытием окна.'
-    : step === 'code' ? `Введите код из SMS для номера ${normalizedPhone}.`
+    : preparing ? 'Это займёт пару секунд.' : step === 'code' ? `Введите код из SMS для номера ${normalizedPhone}.`
       : 'Укажите подтверждённый номер телефона вашего аккаунта. Отправим SMS для восстановления.';
   const currentStep = step === 'phone' ? 0 : step === 'code' ? 1 : 2;
 
-  return <dialog ref={dialog} className="recovery-dialog" aria-labelledby="recovery-title" aria-describedby="recovery-description"
+  return <dialog ref={dialog} className="recovery-dialog" tabIndex={-1} aria-labelledby="recovery-title" aria-describedby="recovery-description" aria-busy={locked}
     onKeyDown={containFocus} onCancel={(event) => { event.preventDefault(); close(); }}>
-    <button className="recovery-close" type="button" aria-label="Закрыть восстановление" disabled={pending} onClick={close}>×</button>
-    <div className={`recovery-symbol ${step === 'success' ? 'recovery-symbol-success' : ''}`}><RecoveryIcon kind={step === 'phone' ? 'key' : step} /></div>
+    <button className="recovery-close" type="button" aria-label="Закрыть восстановление" disabled={locked} onClick={close}>×</button>
+    <div className={`recovery-symbol ${step === 'success' ? 'recovery-symbol-success' : ''}`}><RecoveryIcon kind={preparing ? 'key' : step === 'phone' ? 'key' : step} /></div>
     <h2 id="recovery-title">{title}</h2>
     <p id="recovery-description">{description}</p>
     <ol className="recovery-steps" aria-label="Этапы восстановления">
       {['Телефон', 'SMS-код', 'Новые данные'].map((label, index) => <li key={label} className={index <= currentStep ? 'reached' : ''} aria-current={index === currentStep ? 'step' : undefined}>{label}</li>)}
     </ol>
-    {step !== 'success' ? <form onSubmit={(event) => {
+    {preparing ? <div className="recovery-preparing" role="status" aria-live="polite">
+      <div className="recovery-loader" aria-hidden="true"><RecoveryIcon kind="success" /></div>
+      <span className="sr-only">Готовим для вас данные</span>
+      <div className="recovery-loader-dots" aria-hidden="true"><i /><i /><i /></div>
+    </div> : step !== 'success' ? <form onSubmit={(event) => {
       event.preventDefault();
       // Portals still bubble React events to the surrounding login form.
       event.stopPropagation();
@@ -220,7 +238,7 @@ function RecoveryDialog({ cooldowns, onClose }) {
           {credentials.digits.split('').map((digit, index) => <span key={index} aria-hidden="true">{digit}</span>)}
         </div>
       </div>
-      <p>Логин остался прежним. Для входа используйте новый пароль: оба слова и цифры подряд, без пробелов. Старый пароль больше не действует.</p>
+      <p>Ваши новые секретные слова. Сохраните их!</p>
       {error && <ErrorMessage message={error} />}
       <button className="recovery-primary" type="button" data-copy-password onClick={() => void copyCredentials()}>
         <span role="status">{copied ? 'Пароль скопирован' : 'Скопировать новый пароль'}</span>
