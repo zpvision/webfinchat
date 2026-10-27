@@ -24,7 +24,7 @@ function normalizePublicHost(value) {
     .replace(/\/.*$/, '');
 }
 
-function createSocketUrl() {
+export function createSocketUrl() {
   const apiHost = normalizePublicHost(PUBLIC_FINCHAT_HOST);
 
   if (apiHost) {

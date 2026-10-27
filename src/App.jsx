@@ -7,6 +7,7 @@ import { NotificationPermissionButton } from './calls/NotificationPermissionButt
 import { useMessageScroll } from './useMessageScroll.js';
 import { useMessageNotifications } from './useMessageNotifications.js';
 import { MessageNotice } from './MessageNotice.jsx';
+import { AccessRecovery } from './AccessRecovery.jsx';
 import {
   FinchatRealtimeClient,
   createPdfViewUrl,
@@ -1153,6 +1154,8 @@ function LoginScreen({ onLogin }) {
           <button className="submit-button" type="submit" disabled={!canSubmit}>
             {status === 'loading' ? 'Подключение...' : 'Войти'}
           </button>
+
+          <AccessRecovery disabled={status === 'loading'} />
 
           {message && (
             <div className={`result ${status}`} role="status">
